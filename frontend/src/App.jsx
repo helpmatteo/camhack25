@@ -49,6 +49,21 @@ async function searchExact(phrase, lang = "en") {
   return response.json();
 }
 
+async function generateVideo(text, lang = "en") {
+  const response = await fetch(`${API}/generate-video`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text, lang }),
+  });
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error);
+  }
+  return response.json();
+}
+
 function ms(t) {
   const seconds = Math.floor(t % 60)
     .toString()
@@ -206,6 +221,8 @@ export default function App() {
   const [segments, setSegments] = useState([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [error, setError] = useState("");
+  const [generatingVideo, setGeneratingVideo] = useState(false);
+  const [generatedVideoUrl, setGeneratedVideoUrl] = useState(null);
 
   async function compose() {
     setError("");
@@ -243,6 +260,33 @@ export default function App() {
     setActiveIndex((current) => (current + 1 < segments.length ? current + 1 : current));
   }
 
+  async function handleGenerateVideo() {
+    setError("");
+    setGeneratedVideoUrl(null);
+    
+    if (!text.trim()) {
+      setError("Please enter some text first");
+      return;
+    }
+    
+    setGeneratingVideo(true);
+    try {
+      const result = await generateVideo(text, lang);
+      
+      if (result.status === "success" && result.video_url) {
+        setGeneratedVideoUrl(`${API}${result.video_url}`);
+      } else if (result.status === "partial_failure") {
+        setError(result.message || "Some words could not be found");
+      } else {
+        setError("Video generation failed");
+      }
+    } catch (error) {
+      setError(String(error.message || error));
+    } finally {
+      setGeneratingVideo(false);
+    }
+  }
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-2xl glass-card p-8">
@@ -264,7 +308,7 @@ export default function App() {
               <label className="text-sm">Lang</label>
               <input
                 value={lang}
-                onChange={(event) => setLang(event.event.target.value)}
+                onChange={(event) => setLang(event.target.value)}
                 className="bg-white/40 border border-green-800/50 rounded-lg px-2 py-1 w-20"
               />
             </div>
@@ -275,10 +319,39 @@ export default function App() {
             >
               {loading ? "Composing…" : "Compose"}
             </button>
+            <button
+              onClick={handleGenerateVideo}
+              disabled={generatingVideo || !text.trim()}
+              className="bg-purple-700 text-white px-6 py-2 rounded-full font-semibold shadow-lg hover:bg-purple-800 disabled:opacity-50 transition-transform transform hover:scale-105"
+            >
+              {generatingVideo ? "Generating…" : "Generate Video"}
+            </button>
           </div>
         </div>
 
         {error && <div className="text-red-600 text-sm mt-2 mb-4">{error}</div>}
+
+        {generatedVideoUrl && (
+          <div className="mt-6 p-4 bg-purple-100/50 rounded-xl">
+            <h3 className="text-xl font-semibold mb-3 text-purple-900">Generated Video</h3>
+            <video 
+              controls 
+              className="w-full rounded-lg shadow-lg"
+              src={generatedVideoUrl}
+            >
+              Your browser does not support the video tag.
+            </video>
+            <div className="mt-3 flex gap-2">
+              <a
+                href={generatedVideoUrl}
+                download
+                className="inline-block bg-purple-700 text-white px-4 py-2 rounded-full font-semibold hover:bg-purple-800 transition"
+              >
+                Download Video
+              </a>
+            </div>
+          </div>
+        )}
 
         {segments.length > 0 && (
           <div className="w-full mt-8">

@@ -42,3 +42,14 @@ CREATE TRIGGER IF NOT EXISTS segments_au AFTER UPDATE ON segments BEGIN
   INSERT INTO segments_fts(rowid, text) VALUES (new.id, new.text);
 END;
 
+-- Word clips table for video stitching
+CREATE TABLE IF NOT EXISTS word_clips (
+  word TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  start_time REAL NOT NULL,
+  duration REAL NOT NULL,
+  PRIMARY KEY (word, video_id, start_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_word_clips_word ON word_clips(word);
+
