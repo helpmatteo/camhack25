@@ -27,8 +27,8 @@ class VideoDownloaderConfig:
     video_format: str = "bestvideo[height<=720]+bestaudio/best[height<=720]"
     max_retries: int = 3
     timeout: int = 30
-    clip_padding_start: float = 0.15  # Padding before word start (seconds)
-    clip_padding_end: float = 0.15  # Padding after word end (seconds)
+    clip_padding_start: float = 0  # Padding before word start (seconds)
+    clip_padding_end: float = 0  # Padding after word end (seconds)
 
 
 class VideoSegmentDownloader:
@@ -79,8 +79,10 @@ class VideoSegmentDownloader:
         """
         # Apply configurable padding to ensure clean word boundaries
         # Padding helps account for speech recognition inaccuracies and natural speech flow
-        start_time = max(0, clip_info.start_time - self.config.clip_padding_start)
-        end_time = clip_info.start_time + clip_info.duration + self.config.clip_padding_end
+        # start_time = max(0, clip_info.start_time - self.config.clip_padding_start)
+        start_time = max(0, clip_info.start_time)
+        # end_time = clip_info.start_time + clip_info.duration + self.config.clip_padding_end
+        end_time = clip_info.start_time + clip_info.duration
         
         logger.debug(
             f"Downloading with padding: original={clip_info.start_time:.2f}s-{clip_info.start_time + clip_info.duration:.2f}s, "

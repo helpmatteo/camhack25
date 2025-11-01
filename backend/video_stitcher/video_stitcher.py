@@ -32,8 +32,8 @@ class StitchingConfig:
     channel_id: Optional[str] = None  # Optional channel ID to filter clips to
     
     # Clip extraction options
-    clip_padding_start: float = 0.15  # Padding before word start (seconds) for cleaner cuts
-    clip_padding_end: float = 0.15  # Padding after word end (seconds) for cleaner cuts
+    clip_padding_start: float = 0  # Padding before word start (seconds) for cleaner cuts
+    clip_padding_end: float = 0  # Padding after word end (seconds) for cleaner cuts
     
     # Visual enhancement options
     add_subtitles: bool = False  # Add subtitle overlays to clips
