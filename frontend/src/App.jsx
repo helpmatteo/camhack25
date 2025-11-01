@@ -28,27 +28,6 @@ function useYouTubeAPI() {
   return ready;
 }
 
-function sentenceSplit(text) {
-  const explicit = Array.from(text.matchAll(/"([^"]+)"/g)).map((m) => m[1]);
-  if (explicit.length) {
-    return explicit.map((s) => s.trim()).filter(Boolean);
-  }
-
-  return text
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
-async function searchExact(phrase, lang = "en") {
-  const params = new URLSearchParams({ q: phrase, lang, limit: "5" });
-  const response = await fetch(`${API}/search?${params}`);
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  return response.json();
-}
-
 async function generateVideo(text, lang = "en", maxPhraseLength = 10) {
   const response = await fetch(`${API}/generate-video`, {
     method: "POST",
@@ -191,23 +170,25 @@ function Timeline({ segments, activeIndex, setActiveIndex }) {
   if (!segments.length) return null;
 
   return (
-    <ol className="divide-y divide-green-800/20 rounded-xl border border-green-800/20 overflow-hidden">
+    <ol className="divide-y divide-purple-200 rounded-xl border-2 border-purple-200 overflow-hidden bg-white/60 backdrop-blur-sm shadow-sm">
       {segments.map((segment, index) => (
         <li
           key={`${segment.videoId}-${segment.start}-${index}`}
           onClick={() => setActiveIndex(index)}
-          className={`p-3 cursor-pointer transition-transform transform hover:scale-105 ${
-            index === activeIndex ? "bg-emerald-700/20" : "hover:bg-emerald-700/10"
+          className={`p-4 cursor-pointer transition-all duration-200 ${
+            index === activeIndex 
+              ? "bg-gradient-to-r from-purple-100 via-violet-100 to-fuchsia-100 border-l-4 border-fuchsia-500" 
+              : "hover:bg-purple-50/80"
           }`}
         >
           <div className="flex items-center justify-between">
-            <div className="font-medium truncate mr-2">{segment.title || segment.videoId}</div>
-            <div className="text-xs text-emerald-900/80">
+            <div className="font-semibold truncate mr-2 text-purple-900">{segment.title || segment.videoId}</div>
+            <div className="text-xs font-medium text-purple-600 bg-purple-100 px-2 py-1 rounded-full">
               {ms(segment.start)} → {ms(segment.end)}
             </div>
           </div>
-          <div className="text-xs text-emerald-900/80 truncate">{segment.channel}</div>
-          <div className="text-sm mt-1 line-clamp-2">{segment.text}</div>
+          <div className="text-xs text-purple-700/80 truncate mt-1">{segment.channel}</div>
+          <div className="text-sm mt-2 line-clamp-2 text-gray-700">{segment.text}</div>
         </li>
       ))}
     </ol>
@@ -216,46 +197,12 @@ function Timeline({ segments, activeIndex, setActiveIndex }) {
 
 export default function App() {
   const [text, setText] = useState("");
-  const [lang, setLang] = useState("en");
-  const [loading, setLoading] = useState(false);
   const [segments, setSegments] = useState([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [error, setError] = useState("");
   const [generatingVideo, setGeneratingVideo] = useState(false);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState(null);
   const [maxPhraseLength, setMaxPhraseLength] = useState(10);
-
-  async function compose() {
-    setError("");
-    const clauses = sentenceSplit(text);
-    if (!clauses.length) return;
-
-    setLoading(true);
-    try {
-      const out = [];
-      for (const clause of clauses) {
-        const query = clause.startsWith("\"") ? clause : `"${clause}"`;
-        const hits = await searchExact(query.replace(/^\"|\"$/g, ""), lang);
-        if (hits.length) {
-          const topHit = hits[0];
-          out.push({
-            videoId: topHit.video_id,
-            start: topHit.t_start,
-            end: Math.max(topHit.t_end, topHit.t_start + 2),
-            text: topHit.text,
-            title: topHit.title,
-            channel: topHit.channel_title
-          });
-        }
-      }
-      setSegments(out);
-      setActiveIndex(0);
-    } catch (error) {
-      setError(String(error.message || error));
-    } finally {
-      setLoading(false);
-    }
-  }
 
   function advance() {
     setActiveIndex((current) => (current + 1 < segments.length ? current + 1 : current));
@@ -272,7 +219,7 @@ export default function App() {
     
     setGeneratingVideo(true);
     try {
-      const result = await generateVideo(text, lang, maxPhraseLength);
+      const result = await generateVideo(text, "en", maxPhraseLength);
       
       if (result.status === "success" && result.video_url) {
         setGeneratedVideoUrl(`${API}${result.video_url}`);
@@ -289,135 +236,171 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-2xl glass-card p-8">
-        <h1 className="text-5xl font-bold mb-2 title-animation">ClipScribe</h1>
-        <p className="text-lg mb-8 title-animation" style={{ animationDelay: '0.2s' }}>
-          Paste text. We find exact-phrase caption hits and play them in sequence.
-        </p>
-        
-        <div className="relative mb-4">
-          <textarea
-            className="w-full bg-transparent border-2 border-green-800/50 rounded-2xl py-4 px-6 text-lg transition-shadow duration-300 placeholder-green-900/60"
-            placeholder='e.g. "how do you do". "nice to meet you". "see you soon".'
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            rows="3"
-          />
-          <div className="absolute right-5 bottom-5 flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <label className="text-sm">Lang</label>
-              <input
-                value={lang}
-                onChange={(event) => setLang(event.target.value)}
-                className="bg-white/40 border border-green-800/50 rounded-lg px-2 py-1 w-20"
-              />
-            </div>
-            <button
-              onClick={compose}
-              disabled={loading || !text.trim()}
-              className="bg-emerald-700 text-white px-6 py-2 rounded-full font-semibold shadow-lg hover:bg-emerald-800 disabled:opacity-50 transition-transform transform hover:scale-105"
-            >
-              {loading ? "Composing…" : "Compose"}
-            </button>
-            <button
-              onClick={handleGenerateVideo}
-              disabled={generatingVideo || !text.trim()}
-              className="bg-purple-700 text-white px-6 py-2 rounded-full font-semibold shadow-lg hover:bg-purple-800 disabled:opacity-50 transition-transform transform hover:scale-105"
-            >
-              {generatingVideo ? "Generating…" : "Generate Video"}
-            </button>
-          </div>
-        </div>
-
-        <div className="mb-6 p-4 bg-white/40 rounded-xl border border-green-800/30">
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-semibold text-emerald-900">
-              Max Phrase Length: <span className="text-purple-700">{maxPhraseLength} word{maxPhraseLength !== 1 ? 's' : ''}</span>
-            </label>
-            <span className="text-xs text-emerald-900/70">
-              {maxPhraseLength === 1 ? 'Individual words only' : 
-               maxPhraseLength <= 5 ? 'Short phrases' : 
-               maxPhraseLength <= 15 ? 'Medium phrases' : 
-               'Long phrases'}
-            </span>
-          </div>
-          <input
-            type="range"
-            min="1"
-            max="50"
-            value={maxPhraseLength}
-            onChange={(e) => setMaxPhraseLength(parseInt(e.target.value))}
-            className="w-full h-2 bg-emerald-200 rounded-lg appearance-none cursor-pointer accent-purple-700"
-            style={{
-              background: `linear-gradient(to right, #7c3aed 0%, #7c3aed ${((maxPhraseLength - 1) / 49) * 100}%, #d1fae5 ${((maxPhraseLength - 1) / 49) * 100}%, #d1fae5 100%)`
-            }}
-          />
-          <div className="flex justify-between text-xs text-emerald-900/60 mt-1">
-            <span>1</span>
-            <span>25</span>
-            <span>50</span>
-          </div>
-          <p className="text-xs text-emerald-900/70 mt-2">
-            Higher values create smoother videos by matching longer consecutive word sequences from the same video clip.
+    <div className="min-h-screen flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8">
+      <div className="w-full max-w-5xl">
+        {/* Header */}
+        <div className="text-center mb-6">
+          <h1 className="text-6xl sm:text-7xl font-bold mb-3 bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 bg-clip-text text-transparent drop-shadow-sm">
+            ClipScribe
+          </h1>
+          <p className="text-lg sm:text-xl text-purple-700/80 font-medium">
+            Generate videos from text using real YouTube clips
           </p>
         </div>
 
-        {error && <div className="text-red-600 text-sm mt-2 mb-4">{error}</div>}
-
-        {generatedVideoUrl && (
-          <div className="mt-6 p-4 bg-purple-100/50 rounded-xl">
-            <h3 className="text-xl font-semibold mb-3 text-purple-900">Generated Video</h3>
-            <video 
-              controls 
-              className="w-full rounded-lg shadow-lg"
-              src={generatedVideoUrl}
-            >
-              Your browser does not support the video tag.
-            </video>
-            <div className="mt-3 flex gap-2">
-              <a
-                href={generatedVideoUrl}
-                download
-                className="inline-block bg-purple-700 text-white px-4 py-2 rounded-full font-semibold hover:bg-purple-800 transition"
-              >
-                Download Video
-              </a>
-            </div>
+        {/* Main Card */}
+        <div className="bg-white/70 backdrop-blur-xl rounded-3xl shadow-2xl p-6 sm:p-8 lg:p-10 border border-purple-200/30">
+          {/* Text Input */}
+          <div className="mb-6">
+            <label className="block text-sm font-semibold text-purple-900 mb-2">
+              Enter your text
+            </label>
+            <textarea
+              className="w-full bg-white/60 border-2 border-purple-300/40 rounded-2xl py-4 px-6 text-lg transition-all duration-300 placeholder-purple-400/70 focus:border-purple-400 focus:ring-4 focus:ring-purple-200/50 focus:outline-none focus:bg-white/80 resize-none shadow-sm"
+              placeholder="Type or paste your text here..."
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              rows="5"
+            />
           </div>
-        )}
 
-        {segments.length > 0 && (
-          <div className="w-full mt-8">
-            <Player segments={segments} activeIndex={activeIndex} onAdvance={advance} />
-
-            <div className="flex justify-center gap-4 mt-4">
-              <button
-                onClick={() => setActiveIndex((index) => Math.max(0, index - 1))}
-                className="px-4 py-2 rounded-full border border-green-800/50 hover:bg-white/60 disabled:opacity-50"
-                disabled={!segments.length || activeIndex === 0}
-              >
-                ◀ Prev
-              </button>
-              <button
-                onClick={() => setActiveIndex((index) => Math.min(segments.length - 1, index + 1))}
-                className="px-4 py-2 rounded-full border border-green-800/50 hover:bg-white/60 disabled:opacity-50"
-                disabled={!segments.length || activeIndex >= segments.length - 1}
-              >
-                Next ▶
-              </button>
+          {/* Phrase Length Slider */}
+          <div className="mb-6 p-5 bg-gradient-to-br from-purple-100/30 via-violet-100/30 to-fuchsia-100/30 rounded-2xl border border-purple-300/30 shadow-sm backdrop-blur-sm">
+            <div className="flex items-center justify-between mb-3">
+              <label className="text-sm font-semibold text-purple-900">
+                Phrase Length: <span className="text-fuchsia-600 font-bold">{maxPhraseLength}</span> word{maxPhraseLength !== 1 ? 's' : ''}
+              </label>
+              <span className="text-xs font-medium text-purple-600 bg-white/80 backdrop-blur-sm px-3 py-1.5 rounded-full shadow-sm border border-purple-200">
+                {maxPhraseLength === 1 ? '🔤 Words only' : 
+                 maxPhraseLength <= 5 ? '📝 Short' : 
+                 maxPhraseLength <= 15 ? '📄 Medium' : 
+                 '📖 Long'}
+              </span>
             </div>
-
-            <div className="mt-6">
-              <h3 className="text-xl font-semibold mb-3">Timeline</h3>
-              <Timeline segments={segments} activeIndex={activeIndex} setActiveIndex={setActiveIndex} />
+            <input
+              type="range"
+              min="1"
+              max="50"
+              value={maxPhraseLength}
+              onChange={(e) => setMaxPhraseLength(parseInt(e.target.value))}
+              className="w-full h-3 bg-purple-200/50 rounded-full appearance-none cursor-pointer accent-fuchsia-600"
+              style={{
+                background: `linear-gradient(to right, #c026d3 0%, #c026d3 ${((maxPhraseLength - 1) / 49) * 100}%, #e9d5ff ${((maxPhraseLength - 1) / 49) * 100}%, #e9d5ff 100%)`
+              }}
+            />
+            <div className="flex justify-between text-xs text-purple-500 font-medium mt-2">
+              <span>1</span>
+              <span>25</span>
+              <span>50</span>
             </div>
-
-            <div className="mt-6">
-               <PlaylistLinks segments={segments} />
-            </div>
+            <p className="text-xs text-purple-600/80 mt-3 flex items-center gap-1">
+              <span>✨</span>
+              <span>Longer phrases create smoother videos with fewer cuts</span>
+            </p>
           </div>
-        )}
+
+          {/* Generate Button */}
+          <button
+            onClick={handleGenerateVideo}
+            disabled={generatingVideo || !text.trim()}
+            className="w-full bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 text-white px-8 py-4 rounded-2xl font-bold text-lg shadow-lg hover:shadow-2xl hover:from-violet-700 hover:via-purple-700 hover:to-fuchsia-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98]"
+          >
+            {generatingVideo ? (
+              <span className="flex items-center justify-center gap-2">
+                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Generating Video...
+              </span>
+            ) : (
+              <span className="flex items-center justify-center gap-2">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Generate Video
+              </span>
+            )}
+          </button>
+
+          {error && (
+            <div className="mt-4 p-4 bg-red-50 border-2 border-red-300 rounded-2xl text-red-700 text-sm shadow-sm">
+              <div className="flex items-start gap-2">
+                <svg className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div>
+                  <span className="font-semibold">Error:</span> {error}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {generatedVideoUrl && (
+            <div className="mt-6 p-6 bg-gradient-to-br from-purple-100/30 via-violet-100/30 to-fuchsia-100/30 rounded-2xl border-2 border-purple-300/40 shadow-lg backdrop-blur-sm">
+              <h3 className="text-xl font-bold mb-4 text-purple-900 flex items-center gap-2">
+                <svg className="w-6 h-6 text-fuchsia-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Your Video is Ready!
+              </h3>
+              <video 
+                controls 
+                className="w-full rounded-xl shadow-xl border-2 border-white/80"
+                src={generatedVideoUrl}
+              >
+                Your browser does not support the video tag.
+              </video>
+              <div className="mt-4">
+                <a
+                  href={generatedVideoUrl}
+                  download
+                  className="inline-flex items-center gap-2 bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 text-white px-6 py-3 rounded-xl font-bold hover:from-violet-700 hover:via-purple-700 hover:to-fuchsia-700 transition-all shadow-md hover:shadow-xl transform hover:scale-105"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  Download Video
+                </a>
+              </div>
+            </div>
+          )}
+
+          {segments.length > 0 && (
+            <div className="mt-6">
+              <div className="bg-gradient-to-br from-purple-100/30 via-violet-100/30 to-fuchsia-100/30 rounded-2xl p-6 border-2 border-purple-300/40 shadow-lg backdrop-blur-sm">
+                <Player segments={segments} activeIndex={activeIndex} onAdvance={advance} />
+
+                <div className="flex justify-center gap-3 mt-6">
+                  <button
+                    onClick={() => setActiveIndex((index) => Math.max(0, index - 1))}
+                    className="px-6 py-2.5 rounded-xl bg-white/80 backdrop-blur-sm border-2 border-purple-200 hover:border-fuchsia-400 hover:bg-fuchsia-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-semibold text-purple-900 shadow-sm hover:shadow-md"
+                    disabled={!segments.length || activeIndex === 0}
+                  >
+                    ← Previous
+                  </button>
+                  <button
+                    onClick={() => setActiveIndex((index) => Math.min(segments.length - 1, index + 1))}
+                    className="px-6 py-2.5 rounded-xl bg-white/80 backdrop-blur-sm border-2 border-purple-200 hover:border-fuchsia-400 hover:bg-fuchsia-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-semibold text-purple-900 shadow-sm hover:shadow-md"
+                    disabled={!segments.length || activeIndex >= segments.length - 1}
+                  >
+                    Next →
+                  </button>
+                </div>
+
+                <div className="mt-6">
+                  <h3 className="text-lg font-bold mb-3 text-purple-900">Timeline</h3>
+                  <Timeline segments={segments} activeIndex={activeIndex} setActiveIndex={setActiveIndex} />
+                </div>
+
+                <div className="mt-6">
+                  <PlaylistLinks segments={segments} />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
