@@ -159,4 +159,3 @@ curl 'http://localhost:8000/search?q=%22radio%20telescope%22&lang=en&limit=5' | 
 * Channel allow/deny lists to keep result quality high.
 * Basic caching layer for `/search` hot queries.
 * Simple telemetry: log query, top1 clickthrough, dwell, next‑rate.
-
