@@ -69,6 +69,17 @@ class GenerateVideoRequest(BaseModel):
     lang: Optional[str] = "en"
     max_phrase_length: Optional[int] = 10  # Default to 10, range 1-50
     channel_id: Optional[str] = None  # Optional channel ID to filter clips
+    
+    # Clip extraction options
+    clip_padding_start: Optional[float] = 0.15  # Padding before word start (seconds)
+    clip_padding_end: Optional[float] = 0.15  # Padding after word end (seconds)
+    
+    # Visual enhancement options
+    add_subtitles: Optional[bool] = False  # Add subtitle overlays
+    aspect_ratio: Optional[str] = "16:9"  # Target aspect ratio ('16:9', '9:16', '1:1')
+    watermark_text: Optional[str] = None  # Watermark text
+    intro_text: Optional[str] = None  # Intro card text
+    outro_text: Optional[str] = None  # Outro card text
 
 
 class GenerateVideoResponse(BaseModel):
@@ -119,7 +130,16 @@ def generate_video(request: GenerateVideoRequest):
             cleanup_temp_files=False,  # Keep cache for faster subsequent generations
             max_phrase_length=max_phrase_length,
             cookies_from_browser=cookies_browser,
-            channel_id=request.channel_id
+            channel_id=request.channel_id,
+            # Clip extraction options
+            clip_padding_start=request.clip_padding_start or 0.15,
+            clip_padding_end=request.clip_padding_end or 0.15,
+            # Visual enhancement options
+            add_subtitles=request.add_subtitles or False,
+            aspect_ratio=request.aspect_ratio or "16:9",
+            watermark_text=request.watermark_text,
+            intro_text=request.intro_text,
+            outro_text=request.outro_text
         )
         
         # Generate unique filename

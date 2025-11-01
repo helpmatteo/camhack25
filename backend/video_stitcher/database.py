@@ -230,13 +230,22 @@ class WordClipDatabase:
         import json
         return json.loads(row['transcript_data'])
     
-    def find_phrase_in_transcripts(self, phrase: str, exclude_video_ids: Optional[List[str]] = None, channel_id: Optional[str] = None) -> Optional[ClipInfo]:
+    def find_phrase_in_transcripts(
+        self, 
+        phrase: str, 
+        exclude_video_ids: Optional[List[str]] = None, 
+        channel_id: Optional[str] = None,
+        padding_start: float = 0.15,
+        padding_end: float = 0.15
+    ) -> Optional[ClipInfo]:
         """Find a phrase (consecutive words) in the video transcripts, optionally excluding certain videos and filtering by channel.
         
         Args:
             phrase: Space-separated words to find as a consecutive sequence.
             exclude_video_ids: Optional list of video IDs to exclude from results.
             channel_id: Optional channel ID to filter results to.
+            padding_start: Padding before first word start (seconds).
+            padding_end: Padding after last word end (seconds).
             
         Returns:
             ClipInfo with calculated start_time and duration spanning the phrase,
@@ -279,9 +288,14 @@ class WordClipDatabase:
                         break
                 
                 if matches:
-                    # Calculate start_time and duration
-                    start_time = transcript[i][1]  # Start of first word
-                    end_time = transcript[i + len(words) - 1][2]  # End of last word
+                    # Calculate start_time and duration with padding for cleaner cuts
+                    # Padding helps account for speech recognition inaccuracies and natural speech flow
+                    original_start = transcript[i][1]  # Start of first word
+                    original_end = transcript[i + len(words) - 1][2]  # End of last word
+                    
+                    # Apply padding (ensure start doesn't go negative)
+                    start_time = max(0, original_start - padding_start)
+                    end_time = original_end + padding_end
                     duration = end_time - start_time
                     
                     clip = ClipInfo(

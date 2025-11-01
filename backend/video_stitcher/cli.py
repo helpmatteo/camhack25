@@ -116,6 +116,22 @@ Examples:
     )
     
     parser.add_argument(
+        '--padding-start',
+        type=float,
+        default=0.15,
+        metavar='SECONDS',
+        help='Padding before word start for cleaner cuts (default: 0.15 seconds)'
+    )
+    
+    parser.add_argument(
+        '--padding-end',
+        type=float,
+        default=0.15,
+        metavar='SECONDS',
+        help='Padding after word end for cleaner cuts (default: 0.15 seconds)'
+    )
+    
+    parser.add_argument(
         '--no-normalize',
         action='store_true',
         help='Disable audio normalization'
@@ -155,7 +171,9 @@ Examples:
             normalize_audio=not args.no_normalize,
             incremental_stitching=True,
             cleanup_temp_files=not args.no_cleanup,
-            max_phrase_length=args.max_phrase_length
+            max_phrase_length=args.max_phrase_length,
+            clip_padding_start=args.padding_start,
+            clip_padding_end=args.padding_end
         )
         
         # Print summary
@@ -166,6 +184,7 @@ Examples:
         print(f"Database: {args.database}")
         print(f"Output: {args.output_dir}/{args.output}")
         print(f"Max phrase length: {config.max_phrase_length} words")
+        print(f"Clip padding: {config.clip_padding_start}s before, {config.clip_padding_end}s after")
         print(f"Audio normalization: {'enabled' if config.normalize_audio else 'disabled'}")
         print(f"Cleanup temp files: {'yes' if config.cleanup_temp_files else 'no'}")
         print("="*60 + "\n")

@@ -28,6 +28,8 @@ class VideoDownloaderConfig:
     max_retries: int = 3
     timeout: int = 30
     cookies_from_browser: str = None  # e.g., 'chrome', 'firefox', 'safari', 'edge'
+    clip_padding_start: float = 0.15  # Padding before word start (seconds)
+    clip_padding_end: float = 0.15  # Padding after word end (seconds)
 
 
 class VideoSegmentDownloader:
@@ -75,10 +77,15 @@ class VideoSegmentDownloader:
         Raises:
             DownloadError: If download fails after retries.
         """
-        # Calculate end time with small buffer
-        buffer = 0.1
-        start_time = max(0, clip_info.start_time - buffer)
-        end_time = clip_info.start_time + clip_info.duration + buffer
+        # Apply configurable padding to ensure clean word boundaries
+        # Padding helps account for speech recognition inaccuracies and natural speech flow
+        start_time = max(0, clip_info.start_time - self.config.clip_padding_start)
+        end_time = clip_info.start_time + clip_info.duration + self.config.clip_padding_end
+        
+        logger.debug(
+            f"Downloading with padding: original={clip_info.start_time:.2f}s-{clip_info.start_time + clip_info.duration:.2f}s, "
+            f"padded={start_time:.2f}s-{end_time:.2f}s"
+        )
         
         # Generate unique output filename (without extension - yt-dlp will add it)
         filename = f"{clip_info.video_id}_{clip_info.start_time:.2f}_{clip_info.duration:.2f}"
