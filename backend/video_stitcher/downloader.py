@@ -27,6 +27,7 @@ class VideoDownloaderConfig:
     video_format: str = "bestvideo[height<=720]+bestaudio/best[height<=720]"
     max_retries: int = 3
     timeout: int = 30
+    cookies_from_browser: str = None  # e.g., 'chrome', 'firefox', 'safari', 'edge'
 
 
 class VideoSegmentDownloader:
@@ -97,6 +98,11 @@ class VideoSegmentDownloader:
                 'ffmpeg': ['-ss', str(start_time), '-t', str(end_time - start_time)]
             },
         }
+        
+        # Add cookie authentication if configured
+        if self.config.cookies_from_browser:
+            ydl_opts['cookiesfrombrowser'] = (self.config.cookies_from_browser,)
+            logger.info(f"Using cookies from browser: {self.config.cookies_from_browser}")
         
         try:
             youtube_url = f"https://www.youtube.com/watch?v={clip_info.video_id}"

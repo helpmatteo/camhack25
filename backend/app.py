@@ -90,6 +90,9 @@ def generate_video(request: GenerateVideoRequest):
         
         # Use the existing video_stitcher with word_clips database
         # Note: we're using the youglish.db which should have word_clips table
+        # Get browser for cookie extraction from environment variable
+        cookies_browser = os.getenv("COOKIES_FROM_BROWSER", "chrome")
+        
         config = StitchingConfig(
             database_path="./data/youglish.db",
             output_directory="./output",
@@ -98,7 +101,8 @@ def generate_video(request: GenerateVideoRequest):
             normalize_audio=True,
             incremental_stitching=True,
             cleanup_temp_files=True,
-            max_phrase_length=max_phrase_length
+            max_phrase_length=max_phrase_length,
+            cookies_from_browser=cookies_browser
         )
         
         # Generate unique filename

@@ -26,6 +26,7 @@ class StitchingConfig:
     cleanup_temp_files: bool = True
     verify_ffmpeg_on_init: bool = True  # Set to False to skip ffmpeg verification
     max_phrase_length: int = 10  # Maximum number of consecutive words to match as a phrase (1-50)
+    cookies_from_browser: str = None  # Browser to extract cookies from (e.g., 'chrome', 'firefox', 'safari')
 
 
 class VideoStitcher:
@@ -53,7 +54,8 @@ class VideoStitcher:
         # Initialize downloader
         downloader_config = VideoDownloaderConfig(
             output_directory=str(self.temp_dir / "downloads"),
-            video_format=config.video_quality
+            video_format=config.video_quality,
+            cookies_from_browser=config.cookies_from_browser
         )
         self.downloader = VideoSegmentDownloader(downloader_config)
         

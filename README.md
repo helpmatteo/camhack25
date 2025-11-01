@@ -158,6 +158,18 @@ VITE_API=http://localhost:8000 npm run dev
 
 ## 4) Video Generation Setup
 
+### 4.0 YouTube Authentication (Required)
+
+⚠️ **Important:** YouTube now requires authentication to download videos to prevent bot detection.
+
+**Quick Setup:**
+1. Make sure you're logged into YouTube in Chrome (or your preferred browser)
+2. That's it! The backend will automatically use your browser's cookies
+
+**Need to use a different browser?**
+- See `YOUTUBE_COOKIE_SETUP.md` for detailed instructions
+- Set `COOKIES_FROM_BROWSER` environment variable to your browser name
+
 ### 4.1 Migrate Database (First Time Only)
 
 Add support for phrase matching to improve video smoothness:
@@ -226,13 +238,24 @@ Once the database is populated, users can:
 
 ## 5) Usage
 
+### Quick Start (Both Servers)
+
+```bash
+./start.sh
+```
+
+This automatically starts both backend and frontend with auto-port detection.
+
+### Manual Start
+
 1. Put your channel IDs and API key in `backend/.env`.
 2. Run `python ingest.py` to build the DB. Expect many videos to be skipped (no captions). That's fine.
 3. Run `python ingest_whisperx.py` to populate word-level clips for video generation.
-4. Start API: `uvicorn app:app --reload --port 8000`.
-5. Start frontend: `npm run dev` in `/frontend`.
-6. Query **exact phrases** (don't rely on fuzzy; use the real phrase). Click **Next** to advance through hits.
-7. Or enter text and click **"Generate Video"** to create a stitched video from individual word clips.
+4. Make sure you're logged into YouTube in Chrome (for cookie authentication).
+5. Start API: `cd backend && python run.py` (auto-detects available port).
+6. Start frontend: `npm run dev` in `/frontend`.
+7. Query **exact phrases** (don't rely on fuzzy; use the real phrase). Click **Next** to advance through hits.
+8. Or enter text and click **"Generate Video"** to create a stitched video from individual word clips.
 
 ---
 
