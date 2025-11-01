@@ -108,12 +108,14 @@ class VideoStitcher:
         This method attempts to find longer consecutive phrases from the same video
         before falling back to individual word lookups. It also tries to avoid
         repeating videos unless necessary, creating more diverse output.
+        For words without clips, placeholder ClipInfo objects are inserted.
         
         Args:
             words: List of words to look up.
             
         Returns:
-            Tuple of (found_clips, missing_words).
+            Tuple of (found_clips_with_placeholders, missing_words).
+            The clips list includes placeholder ClipInfo objects for missing words.
         """
         logger.info(f"Looking up clips for {len(words)} words")
         if self.config.channel_id:
@@ -165,22 +167,31 @@ class VideoStitcher:
                 
                 if clip_info is None:
                     missing_words.append(word)
-                    logger.warning(f"No clip found for word: {word}")
+                    logger.warning(f"No clip found for word: {word}, will use placeholder")
+                    # Create placeholder ClipInfo
+                    placeholder = ClipInfo(
+                        word=word,
+                        video_id="PLACEHOLDER",  # Special marker for placeholders
+                        start_time=0.0,
+                        duration=1.0  # Default duration for placeholder
+                    )
+                    found_clips.append(placeholder)
                 else:
                     found_clips.append(clip_info)
                     used_video_ids.append(clip_info.video_id)
                 
                 i += 1
         
-        # Log video diversity stats
-        unique_videos = len(set(used_video_ids))
-        if unique_videos < len(used_video_ids):
-            logger.info(f"Video diversity: {unique_videos} unique videos used for {len(found_clips)} clips")
+        # Log video diversity stats (excluding placeholders)
+        real_clips = [c for c in found_clips if c.video_id != "PLACEHOLDER"]
+        unique_videos = len(set(c.video_id for c in real_clips))
+        if unique_videos < len(real_clips):
+            logger.info(f"Video diversity: {unique_videos} unique videos used for {len(real_clips)} clips")
         else:
             logger.info(f"Video diversity: All clips from different videos ({unique_videos} unique)")
         
         logger.info(
-            f"Found {len(found_clips)} clips, {len(missing_words)} words missing"
+            f"Found {len(real_clips)} clips, {len(missing_words)} words using placeholders"
         )
         
         return found_clips, missing_words
@@ -191,6 +202,7 @@ class VideoStitcher:
         progress_callback: Optional[Callable] = None
     ) -> List[str]:
         """Download all required video segments in parallel.
+        Skips placeholder clips (they will be generated separately).
         
         Args:
             clips: List of clip information to download.
@@ -198,12 +210,20 @@ class VideoStitcher:
             
         Returns:
             List of downloaded file paths in same order as input clips.
+            Placeholder clips will have None in their position.
         """
         logger.info(f"Downloading {len(clips)} video segments (parallel)")
         
+        # Filter out placeholders for downloading
+        real_clips = [(i, clip) for i, clip in enumerate(clips) if clip.video_id != "PLACEHOLDER"]
+        
+        if not real_clips:
+            logger.info("No real clips to download (all placeholders)")
+            return [None] * len(clips)
+        
         # Use parallel downloads with ThreadPoolExecutor (max 4 concurrent downloads)
-        max_workers = min(4, len(clips))
-        downloaded_paths = [None] * len(clips)  # Preserve order
+        max_workers = min(4, len(real_clips))
+        downloaded_paths = [None] * len(clips)  # Preserve order, including placeholders
         completed = 0
         
         def download_with_index(index_clip):
@@ -217,10 +237,10 @@ class VideoStitcher:
                 return (index, None, e)
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all downloads
+            # Submit all downloads (only real clips)
             future_to_clip = {
                 executor.submit(download_with_index, (i, clip)): (i, clip)
-                for i, clip in enumerate(clips)
+                for i, clip in real_clips
             }
             
             # Process as they complete
@@ -231,13 +251,17 @@ class VideoStitcher:
                 
                 completed += 1
                 if progress_callback:
-                    progress_callback(completed, len(clips))
+                    progress_callback(completed, len(real_clips))
         
-        # Filter out None values (failed downloads)
+        # Count successful downloads
         successful_paths = [p for p in downloaded_paths if p is not None]
+        placeholder_count = sum(1 for clip in clips if clip.video_id == "PLACEHOLDER")
         
-        logger.info(f"Successfully downloaded {len(successful_paths)}/{len(clips)} segments")
-        return successful_paths
+        logger.info(
+            f"Successfully downloaded {len(successful_paths)}/{len(real_clips)} segments, "
+            f"{placeholder_count} placeholders to generate"
+        )
+        return downloaded_paths
     
     def process_segments(
         self,
@@ -423,27 +447,104 @@ class VideoStitcher:
             
             if not clips:
                 raise ValueError(
-                    f"No clips found for any words. Missing: {', '.join(missing_words)}"
+                    f"No clips found for any words. Missing: {', '.join(missing_words) if missing_words else 'all words'}"
                 )
             
             if missing_words:
-                logger.warning(
-                    f"Continuing without {len(missing_words)} words: {', '.join(missing_words)}"
+                logger.info(
+                    f"Using placeholders for {len(missing_words)} words: {', '.join(missing_words)}"
                 )
             
-            # Step 3: Download segments
-            logger.info("Step 3/5: Downloading video segments")
+            # Step 3: Download segments and create placeholders
+            logger.info("Step 3/5: Downloading video segments and creating placeholders")
             segments = self.download_all_segments(clips, progress_callback)
             
-            if not segments:
-                raise RuntimeError("Failed to download any video segments")
+            # Create placeholder videos for missing words
+            placeholder_dir = self.temp_dir / "placeholders"
+            placeholder_dir.mkdir(parents=True, exist_ok=True)
+            width, height = self._get_target_dimensions()
+            
+            for i, clip in enumerate(clips):
+                if clip.video_id == "PLACEHOLDER":
+                    placeholder_path = placeholder_dir / f"placeholder_{i}_{clip.word}.mp4"
+                    logger.info(f"Creating placeholder for word: {clip.word}")
+                    self.processor.create_title_card(
+                        str(placeholder_path),
+                        clip.word,
+                        duration=clip.duration,
+                        width=width,
+                        height=height,
+                        bg_color="gray",
+                        text_color="white"
+                    )
+                    segments[i] = str(placeholder_path)
+            
+            # Verify we have at least some segments (either downloaded or placeholders)
+            if not any(seg is not None for seg in segments):
+                raise RuntimeError("Failed to download or create any video segments")
             
             # Step 4: Process segments
             logger.info("Step 4/5: Processing video segments")
-            processed = self.process_segments(segments, clips, progress_callback)
+            # Rebuild segments list maintaining order with placeholders
+            processed_segments = [None] * len(segments)
+            
+            # Process only real segments first
+            real_segments_to_process = []
+            real_clips_to_process = []
+            real_indices = []
+            
+            for i, (seg, clip) in enumerate(zip(segments, clips)):
+                if seg is not None and clip.video_id != "PLACEHOLDER":
+                    real_segments_to_process.append(seg)
+                    real_clips_to_process.append(clip)
+                    real_indices.append(i)
+            
+            if real_segments_to_process:
+                processed_real = self.process_segments(
+                    real_segments_to_process, 
+                    real_clips_to_process, 
+                    progress_callback
+                )
+                # Map processed segments back to their original positions
+                for idx, processed_path in zip(real_indices, processed_real):
+                    processed_segments[idx] = processed_path
+            
+            # Process placeholders (they're already in correct format, just need to resize if needed)
+            for i, (seg, clip) in enumerate(zip(segments, clips)):
+                if seg is not None and clip.video_id == "PLACEHOLDER":
+                    # Placeholders already created with correct dimensions, but may need aspect ratio adjustment
+                    if self.config.aspect_ratio != "16:9":
+                        temp_resized = self.temp_dir / "processed" / f"placeholder_{i}_resized.mp4"
+                        temp_resized.parent.mkdir(parents=True, exist_ok=True)
+                        self.processor.resize_to_aspect_ratio(
+                            seg,
+                            str(temp_resized),
+                            self.config.aspect_ratio
+                        )
+                        processed_segments[i] = str(temp_resized)
+                    else:
+                        processed_segments[i] = seg
+            
+            # Build final list maintaining exact order (including placeholders)
+            # Only include segments that were successfully processed/created
+            processed = []
+            for i, seg in enumerate(processed_segments):
+                if seg is not None:
+                    processed.append(seg)
+                else:
+                    # If a segment failed, log warning but continue
+                    logger.warning(f"Segment at index {i} failed to process, skipping")
             
             if not processed:
                 raise RuntimeError("Failed to process any video segments")
+            
+            # Verify we have processed segments for all clips (placeholders included)
+            expected_count = len([c for c in clips])
+            if len(processed) != expected_count:
+                logger.warning(
+                    f"Processed segment count ({len(processed)}) doesn't match clip count ({expected_count}). "
+                    f"Missing {expected_count - len(processed)} segments."
+                )
             
             # Step 5: Add intro/outro cards and concatenate
             logger.info("Step 5/5: Adding intro/outro and concatenating videos")
@@ -463,7 +564,7 @@ class VideoStitcher:
                 )
                 all_videos.append(str(intro_path))
             
-            # Add processed segments
+            # Add processed segments in order (placeholders are already included)
             all_videos.extend(processed)
             
             # Add outro card if configured

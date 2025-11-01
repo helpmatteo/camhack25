@@ -51,7 +51,7 @@ def main():
     print(f"API docs at: http://localhost:{port}/docs")
     print(f"YouTube cookies from: {cookies_browser}")
     print("\n💡 Tip: Make sure you're logged into YouTube in {cookies_browser}".format(cookies_browser=cookies_browser.capitalize()))
-    print("   See YOUTUBE_COOKIE_SETUP.md for help with YouTube bot detection")
+    print("   See docs/guides/YOUTUBE_COOKIE_SETUP.md for help with YouTube bot detection")
     print("\n⚠ If your frontend is already running, restart it to use the new port")
     print("\nPress CTRL+C to stop the server\n")
     
