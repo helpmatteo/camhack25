@@ -65,11 +65,12 @@ class VideoSegmentDownloader:
             }]
         return download_range_func
     
-    def download_segment(self, clip_info: ClipInfo) -> str:
+    def download_segment(self, clip_info: ClipInfo, clip_index: int = 0) -> str:
         """Download a specific video segment.
         
         Args:
             clip_info: Information about the clip to download.
+            clip_index: Index of this clip in the sequence (for unique naming).
             
         Returns:
             Path to the downloaded file.
@@ -87,8 +88,8 @@ class VideoSegmentDownloader:
             f"padded={start_time:.2f}s-{end_time:.2f}s"
         )
         
-        # Generate unique output filename (without extension - yt-dlp will add it)
-        filename = f"{clip_info.video_id}_{clip_info.start_time:.2f}_{clip_info.duration:.2f}"
+        # Generate unique output filename with index prefix to ensure uniqueness and preserve order
+        filename = f"{clip_index:04d}_{clip_info.video_id}_{clip_info.start_time:.2f}_{clip_info.duration:.2f}"
         output_template = str(self.output_dir / filename)
         
         # Check if segment already exists in cache (check for common extensions)
@@ -131,39 +132,64 @@ class VideoSegmentDownloader:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(youtube_url, download=True)
             
+            # Find the downloaded file with retry logic (yt-dlp may still be renaming)
+            import time
             # Track files after download to find what was created
             files_after = set(self.output_dir.glob("*")) if self.output_dir.exists() else set()
             new_files = files_after - files_before
             
             # Find the downloaded file
             output_path = None
+            possible_extensions = ['.mp4', '.webm', '.mkv', '.m4a']
+            max_retries = 10  # Try for up to 1 second
             
-            # First, check if any new files were created
-            if new_files:
-                # Use the first new file (should only be one)
-                output_path = list(new_files)[0]
-                logger.debug(f"Found newly created file: {output_path}")
-            else:
-                # Fallback: look for files matching our pattern
-                possible_extensions = ['.mp4', '.webm', '.mkv', '.m4a']
+            for attempt in range(max_retries):
+                # First, try exact filename match with known extensions
                 for ext in possible_extensions:
                     potential_path = Path(output_template + ext)
-                    if potential_path.exists():
+                    if potential_path.exists() and not str(potential_path).endswith('.part'):
                         output_path = potential_path
+                        logger.debug(f"Found file by exact match: {output_path}")
                         break
                 
-                # Also check for files with the video_id in the output directory
-                if output_path is None:
-                    for file in self.output_dir.glob(f"{clip_info.video_id}*"):
-                        if file.stem.startswith(filename):
-                            output_path = file
-                            break
+                if output_path:
+                    break
+                
+                # If not found, search for files with our filename prefix (excluding .part files)
+                for file in self.output_dir.glob(f"{filename}*"):
+                    # Skip .part files (temporary download files)
+                    if str(file).endswith('.part'):
+                        continue
+                    # Check if this file matches our pattern
+                    if file.stem == filename or file.stem.startswith(filename):
+                        output_path = file
+                        logger.debug(f"Found file by pattern match: {output_path}")
+                        break
+                
+                if output_path:
+                    break
+                
+                # Last resort: look at all new files (excluding .part)
+                files_after = set(self.output_dir.glob("*")) if self.output_dir.exists() else set()
+                new_files = files_after - files_before
+                # Filter out .part files
+                new_files = {f for f in new_files if not str(f).endswith('.part')}
+                
+                if new_files:
+                    output_path = list(new_files)[0]
+                    logger.debug(f"Found file from new files: {output_path}")
+                    break
+                
+                # If still not found and not last attempt, wait a bit
+                if attempt < max_retries - 1:
+                    logger.debug(f"File not found on attempt {attempt + 1}, waiting...")
+                    time.sleep(0.1)
+                    continue
             
             if output_path is None or not output_path.exists():
-                # List what files actually exist
-                existing_files = list(self.output_dir.glob("*"))
-                logger.error(f"Files in output directory: {existing_files}")
-                logger.error(f"New files detected: {new_files}")
+                # List what files actually exist (for debugging)
+                existing_files = [str(f) for f in self.output_dir.glob(f"{filename}*")]
+                logger.error(f"Files matching pattern '{filename}*': {existing_files}")
                 raise DownloadError(
                     f"Download completed but file not found. Expected pattern: {filename}.*"
                 )

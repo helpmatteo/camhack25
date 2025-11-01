@@ -133,6 +133,9 @@ def generate_video(request: GenerateVideoRequest):
             temp_directory="./temp",
             video_quality="bestvideo[height<=720]+bestaudio/best[height<=720]",
             normalize_audio=True,
+            incremental_stitching=False,  # Use fast batch concatenation
+            cleanup_temp_files=True,
+            max_phrase_length=max_phrase_length
             incremental_stitching=True,
             cleanup_temp_files=False,  # Keep cache for faster subsequent generations
             max_phrase_length=max_phrase_length,
@@ -147,12 +150,6 @@ def generate_video(request: GenerateVideoRequest):
             watermark_text=request.watermark_text,
             intro_text=request.intro_text,
             outro_text=request.outro_text,
-            # Parallel processing options
-            max_download_workers=request.max_download_workers or 3,
-            max_processing_workers=request.max_processing_workers or 4,
-            download_timeout=request.download_timeout or 300,
-            processing_timeout=request.processing_timeout or 600,
-            max_failure_rate=request.max_failure_rate or 0.5
         )
         
         # Generate unique filename

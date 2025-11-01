@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,10 +24,11 @@ class StitchingConfig:
     temp_directory: str = "./temp"
     video_quality: str = "bestvideo[height<=720]+bestaudio/best[height<=720]"
     normalize_audio: bool = True
-    incremental_stitching: bool = True
+    incremental_stitching: bool = False  # Changed default to False for better performance
     cleanup_temp_files: bool = True
     verify_ffmpeg_on_init: bool = True  # Set to False to skip ffmpeg verification
     max_phrase_length: int = 10  # Maximum number of consecutive words to match as a phrase (1-50)
+    max_workers: int = 8  # Number of parallel workers (1=sequential, 2-8=parallel for performance)
     cookies_from_browser: str = None  # Browser to extract cookies from (e.g., 'chrome', 'firefox', 'safari')
     channel_id: Optional[str] = None  # Optional channel ID to filter clips to
     
@@ -40,13 +42,6 @@ class StitchingConfig:
     watermark_text: Optional[str] = None  # Watermark text to add
     intro_text: Optional[str] = None  # Intro card text
     outro_text: Optional[str] = None  # Outro card text
-    
-    # Parallel processing limits
-    max_download_workers: int = 3  # Max concurrent downloads (1-10, recommend 2-4 to avoid rate limits)
-    max_processing_workers: int = 4  # Max concurrent video processing tasks (1-10)
-    download_timeout: int = 300  # Overall timeout for all downloads in seconds (5 minutes)
-    processing_timeout: int = 600  # Overall timeout for all processing in seconds (10 minutes)
-    max_failure_rate: float = 0.5  # Maximum acceptable failure rate (0.0-1.0, e.g., 0.5 = 50%)
 
 
 class VideoStitcher:
@@ -216,117 +211,68 @@ class VideoStitcher:
             progress_callback: Optional callback function(current, total).
             
         Returns:
-            List of downloaded file paths in same order as input clips.
-            Placeholder clips will have None in their position.
-            
-        Raises:
-            RuntimeError: If too many downloads fail or timeout occurs.
+            List of downloaded file paths in original order.
         """
         logger.info(f"Downloading {len(clips)} video segments (parallel)")
         
-        # Filter out placeholders for downloading
-        real_clips = [(i, clip) for i, clip in enumerate(clips) if clip.video_id != "PLACEHOLDER"]
-        
-        if not real_clips:
-            logger.info("No real clips to download (all placeholders)")
-            return [None] * len(clips)
-        
-        # Use configurable thread limit with safety bounds
-        max_workers = max(1, min(self.config.max_download_workers, len(real_clips), 10))
-        logger.info(f"Using {max_workers} concurrent download workers")
-        
-        downloaded_paths = [None] * len(clips)  # Preserve order, including placeholders
-        failed_downloads = []  # Track failures for error reporting
+        downloaded_paths = [None] * len(clips)  # Preserve order
         completed = 0
         
-        def download_with_index(index_clip):
-            """Download a clip and return its index and path."""
-            index, clip = index_clip
+        def download_clip(index, clip):
+            """Download a single clip and return its index and path."""
             try:
-                path = self.downloader.download_segment(clip)
-                return (index, path, None, clip.word)
+                path = self.downloader.download_segment(clip, clip_index=index)
+                return index, path, None
             except DownloadError as e:
                 logger.error(f"Failed to download clip for '{clip.word}': {e}")
-                return (index, None, e, clip.word)
-            except Exception as e:
-                logger.error(f"Unexpected error downloading '{clip.word}': {e}")
-                return (index, None, e, clip.word)
+                return index, None, e
         
-        try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all downloads (only real clips)
-                future_to_clip = {
-                    executor.submit(download_with_index, (i, clip)): (i, clip)
-                    for i, clip in real_clips
+        # Use ThreadPoolExecutor for parallel downloads if max_workers > 1
+        if self.config.max_workers > 1:
+            with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+                # Submit all download tasks
+                future_to_index = {
+                    executor.submit(download_clip, i, clip): i 
+                    for i, clip in enumerate(clips)
                 }
                 
-                # Process as they complete with timeout
-                try:
-                    for future in as_completed(future_to_clip, timeout=self.config.download_timeout):
-                        index, path, error, word = future.result()
-                        if path:
-                            downloaded_paths[index] = path
-                        else:
-                            failed_downloads.append((index, word, error))
-                        
-                        completed += 1
-                        if progress_callback:
-                            progress_callback(completed, len(real_clips))
-                            
-                except TimeoutError:
-                    logger.error(
-                        f"Download batch timed out after {self.config.download_timeout} seconds "
-                        f"({completed}/{len(real_clips)} completed)"
-                    )
-                    # Cancel remaining futures
-                    for future in future_to_clip:
-                        future.cancel()
-                    raise RuntimeError(
-                        f"Download timeout: only {completed}/{len(real_clips)} completed in "
-                        f"{self.config.download_timeout}s"
-                    )
-        except Exception as e:
-            if isinstance(e, RuntimeError):
-                raise
-            logger.error(f"Download batch failed: {e}")
-            raise RuntimeError(f"Download batch failed: {e}") from e
+                # Collect results as they complete
+                for future in as_completed(future_to_index):
+                    completed += 1
+                    if progress_callback:
+                        progress_callback(completed, len(clips))
+                    
+                    index, path, error = future.result()
+                    if path is not None:
+                        downloaded_paths[index] = path
+        else:
+            # Sequential download (for debugging or single-threaded mode)
+            for i, clip in enumerate(clips):
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, len(clips))
+                
+                index, path, error = download_clip(i, clip)
+                if path is not None:
+                    downloaded_paths[index] = path
         
-        # Count successful downloads
+        # Filter out failed downloads while preserving order
         successful_paths = [p for p in downloaded_paths if p is not None]
-        placeholder_count = sum(1 for clip in clips if clip.video_id == "PLACEHOLDER")
         
-        # Check failure rate
-        failure_rate = len(failed_downloads) / len(real_clips) if real_clips else 0
-        if failure_rate > self.config.max_failure_rate:
-            # Collect detailed error information
-            failed_details = []
-            for _, word, error in failed_downloads[:10]:  # Show first 10
-                error_str = str(error) if error else "Unknown error"
-                # Truncate very long error messages
-                if len(error_str) > 100:
-                    error_str = error_str[:97] + "..."
-                failed_details.append(f"{word} ({error_str})")
-            
-            error_msg = (
-                f"Download failure rate too high: {len(failed_downloads)}/{len(real_clips)} "
-                f"({failure_rate:.1%}) failed (max allowed: {self.config.max_failure_rate:.1%}). "
-                f"Failed words with errors: {'; '.join(failed_details)}"
-                + ("..." if len(failed_downloads) > 10 else "")
-            )
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
+        if len(successful_paths) < len(clips):
+            logger.warning(f"Only {len(successful_paths)}/{len(clips)} downloads succeeded")
+            # Log which clips failed
+            for i, path in enumerate(downloaded_paths):
+                if path is None:
+                    logger.warning(f"Failed to download clip {i}: {clips[i].word}")
         
-        if failed_downloads:
-            logger.warning(
-                f"{len(failed_downloads)} downloads failed but within acceptable threshold "
-                f"({failure_rate:.1%} < {self.config.max_failure_rate:.1%})"
-            )
+        # Log the downloaded clips in order for debugging
+        logger.debug(f"Downloaded clips in order:")
+        for i, (clip, path) in enumerate(zip([c for c, p in zip(clips, downloaded_paths) if p is not None], successful_paths)):
+            logger.debug(f"  {i}: '{clip.word}' from {clip.video_id} -> {Path(path).name}")
         
-        logger.info(
-            f"Successfully downloaded {len(successful_paths)}/{len(real_clips)} segments, "
-            f"{placeholder_count} placeholders to generate"
-        )
-        return downloaded_paths
+        logger.info(f"Successfully downloaded {len(successful_paths)}/{len(clips)} segments")
+        return successful_paths
     
     def process_segments(
         self,
@@ -334,7 +280,7 @@ class VideoStitcher:
         clips: List[ClipInfo],
         progress_callback: Optional[Callable] = None
     ) -> List[str]:
-        """Process segments (normalize, re-encode, add enhancements) for concatenation in parallel.
+        """Process segments (normalize, re-encode) for concatenation in parallel.
         
         Args:
             segment_paths: List of video segment paths.
@@ -342,10 +288,7 @@ class VideoStitcher:
             progress_callback: Optional callback function(current, total).
             
         Returns:
-            List of processed file paths in same order as input.
-            
-        Raises:
-            RuntimeError: If too many processing tasks fail or timeout occurs.
+            List of processed file paths in original order.
         """
         logger.info(f"Processing {len(segment_paths)} video segments (parallel)")
         
@@ -354,12 +297,11 @@ class VideoStitcher:
         processed_dir.mkdir(parents=True, exist_ok=True)
         
         processed_paths = [None] * len(segment_paths)  # Preserve order
-        failed_processing = []  # Track failures
         completed = 0
         
-        def process_with_index(index_path_clip):
-            """Process a segment and return its index and output path."""
-            index, segment_path, clip_info = index_path_clip
+        def process_segment(index, segment_path):
+            """Process a single segment and return its index and path."""
+            # Generate output path
             original_name = Path(segment_path).stem
             output_path = processed_dir / f"{original_name}_processed.mp4"
             segment_name = clip_info.word if clip_info else Path(segment_path).name
@@ -443,81 +385,53 @@ class VideoStitcher:
                         temp_file.unlink()
                 
                 logger.debug(f"Processed segment: {output_path}")
-                return (index, str(output_path), None, segment_name)
+                return index, str(output_path), None
                 
             except Exception as e:
                 logger.error(f"Failed to process segment {segment_path}: {e}")
-                return (index, None, e, segment_name)
+                return index, None, e
         
-        # Use configurable thread limit with safety bounds
-        max_workers = max(1, min(self.config.max_processing_workers, len(segment_paths), 10))
-        logger.info(f"Using {max_workers} concurrent processing workers")
-        
-        try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Use ThreadPoolExecutor for parallel processing if max_workers > 1
+        if self.config.max_workers > 1:
+            with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
                 # Submit all processing tasks
-                future_to_segment = {
-                    executor.submit(process_with_index, (i, path, clips[i] if i < len(clips) else None)): (i, path)
+                future_to_index = {
+                    executor.submit(process_segment, i, path): i 
                     for i, path in enumerate(segment_paths)
                 }
                 
-                # Process as they complete with timeout
-                try:
-                    for future in as_completed(future_to_segment, timeout=self.config.processing_timeout):
-                        index, path, error, name = future.result()
-                        if path:
-                            processed_paths[index] = path
-                        else:
-                            failed_processing.append((index, name, error))
-                        
-                        completed += 1
-                        if progress_callback:
-                            progress_callback(completed, len(segment_paths))
-                            
-                except TimeoutError:
-                    logger.error(
-                        f"Processing batch timed out after {self.config.processing_timeout} seconds "
-                        f"({completed}/{len(segment_paths)} completed)"
-                    )
-                    # Cancel remaining futures
-                    for future in future_to_segment:
-                        future.cancel()
-                    raise RuntimeError(
-                        f"Processing timeout: only {completed}/{len(segment_paths)} completed in "
-                        f"{self.config.processing_timeout}s"
-                    )
-        except Exception as e:
-            if isinstance(e, RuntimeError):
-                raise
-            logger.error(f"Processing batch failed: {e}")
-            raise RuntimeError(f"Processing batch failed: {e}") from e
+                # Collect results as they complete
+                for future in as_completed(future_to_index):
+                    completed += 1
+                    if progress_callback:
+                        progress_callback(completed, len(segment_paths))
+                    
+                    index, path, error = future.result()
+                    if path is not None:
+                        processed_paths[index] = path
+        else:
+            # Sequential processing (for debugging or single-threaded mode)
+            for i, path in enumerate(segment_paths):
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, len(segment_paths))
+                
+                index, processed_path, error = process_segment(i, path)
+                if processed_path is not None:
+                    processed_paths[index] = processed_path
         
-        # Filter out None values (failed processing)
+        # Filter out failed processing while preserving order
         successful_paths = [p for p in processed_paths if p is not None]
         
-        # Check failure rate
-        failure_rate = len(failed_processing) / len(segment_paths) if segment_paths else 0
-        if failure_rate > self.config.max_failure_rate:
-            failed_names = [name for _, name, _ in failed_processing[:10]]  # Show first 10
-            error_msg = (
-                f"Processing failure rate too high: {len(failed_processing)}/{len(segment_paths)} "
-                f"({failure_rate:.1%}) failed (max allowed: {self.config.max_failure_rate:.1%}). "
-                f"Failed segments: {', '.join(failed_names)}"
-                + ("..." if len(failed_processing) > 10 else "")
-            )
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
+        if len(successful_paths) < len(segment_paths):
+            logger.warning(f"Only {len(successful_paths)}/{len(segment_paths)} segments processed successfully")
         
-        if failed_processing:
-            logger.warning(
-                f"{len(failed_processing)} segments failed but within acceptable threshold "
-                f"({failure_rate:.1%} < {self.config.max_failure_rate:.1%})"
-            )
-        else:
-            logger.info(
-                f"Successfully processed {len(successful_paths)}/{len(segment_paths)} segments"
-            )
+        # Log the order of processed files for debugging
+        logger.debug(f"Processed files in order: {[Path(p).name for p in successful_paths]}")
         
+        logger.info(
+            f"Successfully processed {len(successful_paths)}/{len(segment_paths)} segments"
+        )
         return successful_paths
     
     def generate_video(
@@ -542,6 +456,9 @@ class VideoStitcher:
             ValueError: If no clips found for any words.
             RuntimeError: If video generation fails.
         """
+        start_time = time.time()
+        phase_times = {}
+        
         logger.info(f"Starting video generation from text: '{text}'")
         
         try:
@@ -549,14 +466,20 @@ class VideoStitcher:
             output_path = self.output_dir / output_filename
             
             # Step 1: Parse text into words
+            phase_start = time.time()
             logger.info("Step 1/5: Parsing text")
             words = self.parse_text(text)
             if not words:
                 raise ValueError("No words found in input text")
+            phase_times['parse'] = time.time() - phase_start
+            logger.info(f"✓ Parsing completed in {phase_times['parse']:.2f}s")
             
             # Step 2: Lookup clips in database
+            phase_start = time.time()
             logger.info("Step 2/5: Looking up clips in database")
             clips, missing_words = self.lookup_clips(words)
+            phase_times['lookup'] = time.time() - phase_start
+            logger.info(f"✓ Lookup completed in {phase_times['lookup']:.2f}s")
             
             if not clips:
                 raise ValueError(
@@ -568,9 +491,12 @@ class VideoStitcher:
                     f"Using placeholders for {len(missing_words)} words: {', '.join(missing_words)}"
                 )
             
-            # Step 3: Download segments and create placeholders
-            logger.info("Step 3/5: Downloading video segments and creating placeholders")
+            # Step 3: Download segments
+            phase_start = time.time()
+            logger.info("Step 3/5: Downloading video segments")
             segments = self.download_all_segments(clips, progress_callback)
+            phase_times['download'] = time.time() - phase_start
+            logger.info(f"✓ Download completed in {phase_times['download']:.2f}s")
             
             # Create placeholder videos for missing words
             placeholder_dir = self.temp_dir / "placeholders"
@@ -597,56 +523,11 @@ class VideoStitcher:
                 raise RuntimeError("Failed to download or create any video segments")
             
             # Step 4: Process segments
+            phase_start = time.time()
             logger.info("Step 4/5: Processing video segments")
-            # Rebuild segments list maintaining order with placeholders
-            processed_segments = [None] * len(segments)
-            
-            # Process only real segments first
-            real_segments_to_process = []
-            real_clips_to_process = []
-            real_indices = []
-            
-            for i, (seg, clip) in enumerate(zip(segments, clips)):
-                if seg is not None and clip.video_id != "PLACEHOLDER":
-                    real_segments_to_process.append(seg)
-                    real_clips_to_process.append(clip)
-                    real_indices.append(i)
-            
-            if real_segments_to_process:
-                processed_real = self.process_segments(
-                    real_segments_to_process, 
-                    real_clips_to_process, 
-                    progress_callback
-                )
-                # Map processed segments back to their original positions
-                for idx, processed_path in zip(real_indices, processed_real):
-                    processed_segments[idx] = processed_path
-            
-            # Process placeholders (they're already in correct format, just need to resize if needed)
-            for i, (seg, clip) in enumerate(zip(segments, clips)):
-                if seg is not None and clip.video_id == "PLACEHOLDER":
-                    # Placeholders already created with correct dimensions, but may need aspect ratio adjustment
-                    if self.config.aspect_ratio != "16:9":
-                        temp_resized = self.temp_dir / "processed" / f"placeholder_{i}_resized.mp4"
-                        temp_resized.parent.mkdir(parents=True, exist_ok=True)
-                        self.processor.resize_to_aspect_ratio(
-                            seg,
-                            str(temp_resized),
-                            self.config.aspect_ratio
-                        )
-                        processed_segments[i] = str(temp_resized)
-                    else:
-                        processed_segments[i] = seg
-            
-            # Build final list maintaining exact order (including placeholders)
-            # Only include segments that were successfully processed/created
-            processed = []
-            for i, seg in enumerate(processed_segments):
-                if seg is not None:
-                    processed.append(seg)
-                else:
-                    # If a segment failed, log warning but continue
-                    logger.warning(f"Segment at index {i} failed to process, skipping")
+            processed = self.process_segments(segments, progress_callback)
+            phase_times['process'] = time.time() - phase_start
+            logger.info(f"✓ Processing completed in {phase_times['process']:.2f}s")
             
             if not processed:
                 raise RuntimeError("Failed to process any video segments")
@@ -699,6 +580,19 @@ class VideoStitcher:
             else:
                 self.concatenator.concatenate_videos(all_videos, str(output_path))
             
+            # Calculate total time and display summary
+            total_time = time.time() - start_time
+            logger.info("=" * 60)
+            logger.info("VIDEO GENERATION PERFORMANCE SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"  Parse text:       {phase_times.get('parse', 0):.2f}s ({phase_times.get('parse', 0)/total_time*100:.1f}%)")
+            logger.info(f"  Lookup clips:     {phase_times.get('lookup', 0):.2f}s ({phase_times.get('lookup', 0)/total_time*100:.1f}%)")
+            logger.info(f"  Download videos:  {phase_times.get('download', 0):.2f}s ({phase_times.get('download', 0)/total_time*100:.1f}%)")
+            logger.info(f"  Process videos:   {phase_times.get('process', 0):.2f}s ({phase_times.get('process', 0)/total_time*100:.1f}%)")
+            logger.info(f"  Concatenate:      {phase_times.get('concatenate', 0):.2f}s ({phase_times.get('concatenate', 0)/total_time*100:.1f}%)")
+            logger.info("-" * 60)
+            logger.info(f"  TOTAL TIME:       {total_time:.2f}s")
+            logger.info("=" * 60)
             logger.info(f"Video generation completed: {output_path}")
             
             return str(output_path.resolve())
