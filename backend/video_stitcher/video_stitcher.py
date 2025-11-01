@@ -85,7 +85,11 @@ class VideoStitcher:
         return words
     
     def lookup_clips(self, words: List[str]) -> Tuple[List[ClipInfo], List[str]]:
-        """Look up clips for words in database.
+        """Look up clips for words in database, with phrase matching optimization.
+        
+        This method attempts to find longer consecutive phrases from the same video
+        before falling back to individual word lookups. This creates smoother videos
+        with fewer cuts when multiple consecutive words come from the same source.
         
         Args:
             words: List of words to look up.
@@ -95,19 +99,45 @@ class VideoStitcher:
         """
         logger.info(f"Looking up clips for {len(words)} words")
         
-        # Query database for all words
-        results = self.database.get_clips_for_words(words)
-        
-        # Separate found vs missing
         found_clips = []
         missing_words = []
+        i = 0
         
-        for word, clip_info in zip(words, results):
-            if clip_info is None:
-                missing_words.append(word)
-                logger.warning(f"No clip found for word: {word}")
+        while i < len(words):
+            # Try to find longest phrase starting at position i
+            best_clip = None
+            best_length = 0
+            
+            # Only try phrase matching if transcripts are available
+            if self.database.has_transcripts:
+                # Try phrases from longest to shortest (max 10 words)
+                max_phrase_len = min(10, len(words) - i)
+                for phrase_len in range(max_phrase_len, 1, -1):  # Start from longest
+                    phrase = ' '.join(words[i:i + phrase_len])
+                    clip_info = self.database.find_phrase_in_transcripts(phrase)
+                    
+                    if clip_info is not None:
+                        best_clip = clip_info
+                        best_length = phrase_len
+                        logger.info(f"Found {phrase_len}-word phrase: '{phrase}'")
+                        break
+            
+            # If phrase matching succeeded, use it
+            if best_clip is not None:
+                found_clips.append(best_clip)
+                i += best_length
             else:
-                found_clips.append(clip_info)
+                # Fall back to single word lookup
+                word = words[i]
+                clip_info = self.database.get_clip_info(word)
+                
+                if clip_info is None:
+                    missing_words.append(word)
+                    logger.warning(f"No clip found for word: {word}")
+                else:
+                    found_clips.append(clip_info)
+                
+                i += 1
         
         logger.info(
             f"Found {len(found_clips)} clips, {len(missing_words)} words missing"

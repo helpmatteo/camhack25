@@ -158,29 +158,69 @@ VITE_API=http://localhost:8000 npm run dev
 
 ## 4) Video Generation Setup
 
-### 4.1 Ingest WhisperX Word-Level Data
+### 4.1 Migrate Database (First Time Only)
 
-To enable video generation from user sentences, populate the word_clips database:
+Add support for phrase matching to improve video smoothness:
 
 ```bash
 cd backend
 source .venv/bin/activate
+python migrate_db.py data/youglish.db
+```
+
+This creates the `video_transcripts` table for storing complete video transcripts.
+
+### 4.2 Ingest WhisperX Word-Level Data
+
+Populate the database with word-level and full transcript data:
+
+```bash
 python ingest_whisperx.py
 ```
 
-This will parse the `live_whisperx_526k_with_seeks.jsonl` file and create word-to-clip mappings for ~526k video segments with word-level timing.
+This will parse the `live_whisperx_526k_with_seeks.jsonl` file and create:
+- Word-to-clip mappings (~526k entries)
+- Complete video transcripts with timestamps (for phrase matching)
 
-### 4.2 Generate Videos from Text
+### 4.3 Test Video Generation
+
+Verify everything works:
+
+```bash
+# Test phrase matching
+python test_phrase_matching.py
+
+# Generate a test video
+python -m video_stitcher.cli \
+  --text "hello world" \
+  --database data/youglish.db \
+  --output test_hello.mp4 \
+  --verbose
+```
+
+### 4.4 Generate Videos from Text
 
 Once the database is populated, users can:
 
 1. Enter a sentence in the frontend (e.g., "hello world")
 2. Click **"Generate Video"** button
 3. The system will:
-   - Find video clips for each word
+   - Find video clips using phrase matching (combines consecutive words when possible)
    - Download the specific segments
-   - Stitch them together
+   - Stitch them together smoothly
    - Serve the final video
+
+**New Feature: Phrase Matching** 🎯
+- Automatically combines consecutive words from the same video
+- Creates smoother videos with fewer cuts
+- Falls back to individual words when phrases aren't found
+- See `backend/PHRASE_MATCHING_GUIDE.md` for details
+
+### 4.5 Documentation
+
+- **Quick Start**: See `backend/QUICK_START.md` for basic usage
+- **Phrase Matching**: See `backend/PHRASE_MATCHING_GUIDE.md` for advanced features
+- **API Reference**: Check inline docstrings in `backend/video_stitcher/`
 
 ---
 

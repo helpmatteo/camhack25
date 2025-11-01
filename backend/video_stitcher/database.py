@@ -72,6 +72,18 @@ class WordClipDatabase:
             missing = required_columns - columns
             raise ValueError(f"Missing required columns in word_clips table: {missing}")
         
+        # Check for video_transcripts table (optional for phrase matching)
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='video_transcripts'
+        """)
+        self.has_transcripts = cursor.fetchone() is not None
+        
+        if self.has_transcripts:
+            logger.info("Phrase matching enabled (video_transcripts table found)")
+        else:
+            logger.info("Phrase matching disabled (video_transcripts table not found)")
+        
         logger.debug("Database schema verified")
     
     def get_clip_info(self, word: str) -> Optional[ClipInfo]:
@@ -146,6 +158,83 @@ class WordClipDatabase:
             output.append(clip_info)
         
         return output
+    
+    def get_transcript(self, video_id: str) -> Optional[List[List]]:
+        """Get the full transcript for a video.
+        
+        Args:
+            video_id: The YouTube video ID.
+            
+        Returns:
+            List of [word, start_time, end_time] entries, or None if not found.
+        """
+        if not self.has_transcripts:
+            return None
+        
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT transcript_data FROM video_transcripts 
+            WHERE video_id = ?
+        """, (video_id,))
+        
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        
+        import json
+        return json.loads(row['transcript_data'])
+    
+    def find_phrase_in_transcripts(self, phrase: str) -> Optional[ClipInfo]:
+        """Find a phrase (consecutive words) in the video transcripts.
+        
+        Args:
+            phrase: Space-separated words to find as a consecutive sequence.
+            
+        Returns:
+            ClipInfo with calculated start_time and duration spanning the phrase,
+            or None if phrase is not found in any video.
+        """
+        if not self.has_transcripts:
+            return None
+        
+        import json
+        words = phrase.lower().split()
+        if not words:
+            return None
+        
+        cursor = self.connection.cursor()
+        cursor.execute("SELECT video_id, transcript_data FROM video_transcripts")
+        
+        for row in cursor.fetchall():
+            video_id = row['video_id']
+            transcript = json.loads(row['transcript_data'])
+            
+            # Search for consecutive word sequence
+            for i in range(len(transcript) - len(words) + 1):
+                # Check if words match
+                matches = True
+                for j, word in enumerate(words):
+                    if transcript[i + j][0].lower() != word:
+                        matches = False
+                        break
+                
+                if matches:
+                    # Calculate start_time and duration
+                    start_time = transcript[i][1]  # Start of first word
+                    end_time = transcript[i + len(words) - 1][2]  # End of last word
+                    duration = end_time - start_time
+                    
+                    logger.info(f"Found phrase '{phrase}' in video {video_id}: {start_time}s-{end_time}s")
+                    
+                    return ClipInfo(
+                        word=phrase,  # Store the full phrase
+                        video_id=video_id,
+                        start_time=start_time,
+                        duration=duration
+                    )
+        
+        logger.debug(f"Phrase not found in any transcript: {phrase}")
+        return None
     
     def get_database_stats(self) -> dict:
         """Get statistics about the database.

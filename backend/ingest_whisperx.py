@@ -78,7 +78,7 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # Create table if it doesn't exist
+    # Create word_clips table (for backward compatibility)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS word_clips (
             word TEXT NOT NULL,
@@ -91,10 +91,24 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
     
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_word_clips_word ON word_clips(word)")
     
+    # Create video_transcripts table (for phrase matching)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS video_transcripts (
+            video_id TEXT PRIMARY KEY,
+            transcript_data TEXT NOT NULL,
+            word_count INTEGER NOT NULL,
+            duration REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_video_transcripts_video_id ON video_transcripts(video_id)")
+    
     print(f"Reading JSONL file: {jsonl_path}")
     
     total_words = 0
     total_entries = 0
+    total_transcripts = 0
     batch = []
     
     with open(jsonl_path, 'r', encoding='utf-8') as f:
@@ -139,9 +153,25 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
                                     # Parse words from text_stream
                                     words = parse_text_stream(text_stream)
                                     
+                                    # Store individual words (for backward compatibility)
                                     for word, start_time, duration in words:
                                         batch.append((word, video_id, start_time, duration))
                                         total_words += 1
+                                    
+                                    # Store complete transcript for phrase matching
+                                    if words:
+                                        # Store as JSON: [[word, start_time, end_time], ...]
+                                        transcript_json = json.dumps([
+                                            [w, st, st + dur] for w, st, dur in words
+                                        ])
+                                        duration = words[-1][1] + words[-1][2] if words else 0
+                                        
+                                        cursor.execute("""
+                                            INSERT OR REPLACE INTO video_transcripts 
+                                            (video_id, transcript_data, word_count, duration)
+                                            VALUES (?, ?, ?, ?)
+                                        """, (video_id, transcript_json, len(words), duration))
+                                        total_transcripts += 1
                                     
                                     break
                     
@@ -154,7 +184,7 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
                             batch
                         )
                         conn.commit()
-                        print(f"Processed {total_entries} entries, {total_words} words inserted...")
+                        print(f"Processed {total_entries} entries, {total_words} words, {total_transcripts} transcripts...")
                         batch = []
             
             except json.JSONDecodeError as e:
@@ -182,6 +212,9 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
     cursor.execute("SELECT COUNT(DISTINCT video_id) FROM word_clips")
     unique_videos = cursor.fetchone()[0]
     
+    cursor.execute("SELECT COUNT(*) FROM video_transcripts")
+    total_transcripts_db = cursor.fetchone()[0]
+    
     conn.close()
     
     print(f"\n{'='*60}")
@@ -189,6 +222,7 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
     print(f"{'='*60}")
     print(f"Total entries processed: {total_entries}")
     print(f"Total word clips in database: {total_in_db}")
+    print(f"Total transcripts stored: {total_transcripts_db}")
     print(f"Unique words: {unique_words}")
     print(f"Unique videos: {unique_videos}")
     print(f"{'='*60}\n")
