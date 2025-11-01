@@ -110,6 +110,26 @@ This will:
 - Download available transcripts
 - Store them in the database with FTS indexing
 
+### Populating Video Metadata (Channel IDs)
+
+After ingesting video data (especially from WhisperX), you can populate the `videos` table with metadata including channel IDs:
+
+```bash
+export YOUTUBE_API_KEY=your_api_key_here
+python populate_video_metadata.py
+```
+
+This script will:
+- Fetch all unique video IDs from your database
+- Request metadata from YouTube API in batches of 50
+- Populate the `videos` table with:
+  - `channel_id`
+  - `channel_title` 
+  - `title`
+  - `published_at`
+
+Note: This is especially useful after running `ingest_whisperx.py` since that script only populates word-level timing data but not video metadata.
+
 ## Testing
 
 Run the test suite:

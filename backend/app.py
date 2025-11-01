@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
-from db import search_phrase
+from db import search_phrase, get_channels
 from video_stitcher import VideoStitcher, StitchingConfig
 
 app = FastAPI(title="YouGlish-lite API", version="0.1")
@@ -35,17 +35,32 @@ class SearchResponseItem(BaseModel):
     text: str
     title: Optional[str] = None
     channel_title: Optional[str] = None
+    channel_id: Optional[str] = None
+
+
+class ChannelInfo(BaseModel):
+    channel_id: str
+    channel_title: str
+    video_count: int
+
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
+
+@app.get("/channels", response_model=list[ChannelInfo])
+def channels():
+    """Get list of all available channels with video counts."""
+    return get_channels()
+
+
 @app.get("/search", response_model=list[SearchResponseItem])
-def search(q: str, lang: Optional[str] = None, limit: int = 20):
+def search(q: str, lang: Optional[str] = None, limit: int = 20, channel_id: Optional[str] = None):
     q = q.strip()
     if not q:
         raise HTTPException(400, detail="q is required")
-    rows = search_phrase(q, lang, limit)
+    rows = search_phrase(q, lang, limit, channel_id)
     return rows
 
 
@@ -53,6 +68,7 @@ class GenerateVideoRequest(BaseModel):
     text: str
     lang: Optional[str] = "en"
     max_phrase_length: Optional[int] = 10  # Default to 10, range 1-50
+    channel_id: Optional[str] = None  # Optional channel ID to filter clips
 
 
 class GenerateVideoResponse(BaseModel):
@@ -102,7 +118,8 @@ def generate_video(request: GenerateVideoRequest):
             incremental_stitching=True,
             cleanup_temp_files=True,
             max_phrase_length=max_phrase_length,
-            cookies_from_browser=cookies_browser
+            cookies_from_browser=cookies_browser,
+            channel_id=request.channel_id
         )
         
         # Generate unique filename

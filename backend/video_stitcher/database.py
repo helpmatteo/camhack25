@@ -86,28 +86,47 @@ class WordClipDatabase:
         
         logger.debug("Database schema verified")
     
-    def get_clip_info(self, word: str, exclude_video_ids: Optional[List[str]] = None) -> Optional[ClipInfo]:
-        """Look up clip information for a single word, optionally excluding certain videos.
+    def get_clip_info(self, word: str, exclude_video_ids: Optional[List[str]] = None, channel_id: Optional[str] = None) -> Optional[ClipInfo]:
+        """Look up clip information for a single word, optionally excluding certain videos and filtering by channel.
         
         Args:
             word: The word to search for (case-insensitive).
             exclude_video_ids: Optional list of video IDs to exclude from results.
+            channel_id: Optional channel ID to filter results to.
             
         Returns:
             ClipInfo object if word is found, None otherwise.
         """
         cursor = self.connection.cursor()
         
-        if exclude_video_ids:
-            # Try to find a clip from a video not in the exclusion list
-            placeholders = ','.join('?' * len(exclude_video_ids))
-            cursor.execute(f"""
+        # Build base query with channel filter
+        base_conditions = ["LOWER(word) = LOWER(?)"]
+        base_params = [word]
+        
+        if channel_id:
+            # Join with videos table to filter by channel
+            base_query = """
+                SELECT wc.word, wc.video_id, wc.start_time, wc.duration 
+                FROM word_clips wc
+                JOIN videos v ON wc.video_id = v.video_id
+                WHERE {}
+                AND v.channel_id = ?
+            """
+            base_params.append(channel_id)
+        else:
+            base_query = """
                 SELECT word, video_id, start_time, duration 
                 FROM word_clips 
-                WHERE LOWER(word) = LOWER(?)
-                AND video_id NOT IN ({placeholders})
-                LIMIT 1
-            """, (word, *exclude_video_ids))
+                WHERE {}
+            """
+        
+        if exclude_video_ids:
+            # Try to find a clip from a video not in the exclusion list
+            conditions = base_conditions + [f"video_id NOT IN ({','.join('?' * len(exclude_video_ids))})"]
+            query = base_query.format(" AND ".join(conditions)) + " LIMIT 1"
+            params = base_params + list(exclude_video_ids)
+            
+            cursor.execute(query, params)
             
             row = cursor.fetchone()
             if row is not None:
@@ -123,12 +142,8 @@ class WordClipDatabase:
             logger.debug(f"No alternative video found for '{word}', using any available")
         
         # Standard query without exclusions
-        cursor.execute("""
-            SELECT word, video_id, start_time, duration 
-            FROM word_clips 
-            WHERE LOWER(word) = LOWER(?)
-            LIMIT 1
-        """, (word,))
+        query = base_query.format(" AND ".join(base_conditions)) + " LIMIT 1"
+        cursor.execute(query, base_params)
         
         row = cursor.fetchone()
         if row is None:
@@ -212,12 +227,13 @@ class WordClipDatabase:
         import json
         return json.loads(row['transcript_data'])
     
-    def find_phrase_in_transcripts(self, phrase: str, exclude_video_ids: Optional[List[str]] = None) -> Optional[ClipInfo]:
-        """Find a phrase (consecutive words) in the video transcripts, optionally excluding certain videos.
+    def find_phrase_in_transcripts(self, phrase: str, exclude_video_ids: Optional[List[str]] = None, channel_id: Optional[str] = None) -> Optional[ClipInfo]:
+        """Find a phrase (consecutive words) in the video transcripts, optionally excluding certain videos and filtering by channel.
         
         Args:
             phrase: Space-separated words to find as a consecutive sequence.
             exclude_video_ids: Optional list of video IDs to exclude from results.
+            channel_id: Optional channel ID to filter results to.
             
         Returns:
             ClipInfo with calculated start_time and duration spanning the phrase,
@@ -232,7 +248,17 @@ class WordClipDatabase:
             return None
         
         cursor = self.connection.cursor()
-        cursor.execute("SELECT video_id, transcript_data FROM video_transcripts")
+        
+        # Add channel filter if specified
+        if channel_id:
+            cursor.execute("""
+                SELECT vt.video_id, vt.transcript_data 
+                FROM video_transcripts vt
+                JOIN videos v ON vt.video_id = v.video_id
+                WHERE v.channel_id = ?
+            """, (channel_id,))
+        else:
+            cursor.execute("SELECT video_id, transcript_data FROM video_transcripts")
         
         # First pass: try to find in videos NOT in exclusion list
         found_excluded = None
@@ -310,6 +336,37 @@ class WordClipDatabase:
         
         logger.info(f"Database stats: {stats}")
         return stats
+    
+    def get_available_channels(self) -> List[dict]:
+        """Get list of available channels with video counts.
+        
+        Returns:
+            List of dictionaries with keys: channel_id, channel_title, video_count.
+        """
+        cursor = self.connection.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                v.channel_id,
+                v.channel_title,
+                COUNT(DISTINCT wc.video_id) as video_count
+            FROM videos v
+            JOIN word_clips wc ON v.video_id = wc.video_id
+            WHERE v.channel_id IS NOT NULL
+            GROUP BY v.channel_id, v.channel_title
+            ORDER BY video_count DESC, v.channel_title
+        """)
+        
+        channels = []
+        for row in cursor.fetchall():
+            channels.append({
+                'channel_id': row['channel_id'],
+                'channel_title': row['channel_title'],
+                'video_count': row['video_count']
+            })
+        
+        logger.info(f"Found {len(channels)} channels in database")
+        return channels
     
     def __enter__(self):
         """Context manager entry."""

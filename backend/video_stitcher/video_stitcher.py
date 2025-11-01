@@ -27,6 +27,7 @@ class StitchingConfig:
     verify_ffmpeg_on_init: bool = True  # Set to False to skip ffmpeg verification
     max_phrase_length: int = 10  # Maximum number of consecutive words to match as a phrase (1-50)
     cookies_from_browser: str = None  # Browser to extract cookies from (e.g., 'chrome', 'firefox', 'safari')
+    channel_id: Optional[str] = None  # Optional channel ID to filter clips to
 
 
 class VideoStitcher:
@@ -101,6 +102,8 @@ class VideoStitcher:
             Tuple of (found_clips, missing_words).
         """
         logger.info(f"Looking up clips for {len(words)} words")
+        if self.config.channel_id:
+            logger.info(f"Filtering clips to channel: {self.config.channel_id}")
         
         found_clips = []
         missing_words = []
@@ -118,7 +121,11 @@ class VideoStitcher:
                 max_phrase_len = min(self.config.max_phrase_length, len(words) - i)
                 for phrase_len in range(max_phrase_len, 1, -1):  # Start from longest
                     phrase = ' '.join(words[i:i + phrase_len])
-                    clip_info = self.database.find_phrase_in_transcripts(phrase, exclude_video_ids=used_video_ids)
+                    clip_info = self.database.find_phrase_in_transcripts(
+                        phrase, 
+                        exclude_video_ids=used_video_ids,
+                        channel_id=self.config.channel_id
+                    )
                     
                     if clip_info is not None:
                         best_clip = clip_info
@@ -134,7 +141,11 @@ class VideoStitcher:
             else:
                 # Fall back to single word lookup
                 word = words[i]
-                clip_info = self.database.get_clip_info(word, exclude_video_ids=used_video_ids)
+                clip_info = self.database.get_clip_info(
+                    word, 
+                    exclude_video_ids=used_video_ids,
+                    channel_id=self.config.channel_id
+                )
                 
                 if clip_info is None:
                     missing_words.append(word)
