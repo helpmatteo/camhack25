@@ -116,7 +116,7 @@ def generate_video(request: GenerateVideoRequest):
             video_quality="bestvideo[height<=720]+bestaudio/best[height<=720]",
             normalize_audio=True,
             incremental_stitching=True,
-            cleanup_temp_files=True,
+            cleanup_temp_files=False,  # Keep cache for faster subsequent generations
             max_phrase_length=max_phrase_length,
             cookies_from_browser=cookies_browser,
             channel_id=request.channel_id

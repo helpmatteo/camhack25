@@ -84,6 +84,13 @@ class VideoSegmentDownloader:
         filename = f"{clip_info.video_id}_{clip_info.start_time:.2f}_{clip_info.duration:.2f}"
         output_template = str(self.output_dir / filename)
         
+        # Check if segment already exists in cache (check for common extensions)
+        for ext in ['.mp4', '.webm', '.mkv', '.m4a']:
+            cached_path = Path(output_template + ext)
+            if cached_path.exists():
+                logger.info(f"Using cached segment: {cached_path.name}")
+                return str(cached_path)
+        
         # Configure yt-dlp options with proper postprocessing for segments
         ydl_opts = {
             'format': self.config.video_format,

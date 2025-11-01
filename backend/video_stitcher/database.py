@@ -100,11 +100,11 @@ class WordClipDatabase:
         cursor = self.connection.cursor()
         
         # Build base query with channel filter
-        base_conditions = ["LOWER(word) = LOWER(?)"]
         base_params = [word]
         
         if channel_id:
             # Join with videos table to filter by channel
+            base_conditions = ["LOWER(wc.word) = LOWER(?)"]
             base_query = """
                 SELECT wc.word, wc.video_id, wc.start_time, wc.duration 
                 FROM word_clips wc
@@ -113,16 +113,19 @@ class WordClipDatabase:
                 AND v.channel_id = ?
             """
             base_params.append(channel_id)
+            video_id_column = "wc.video_id"  # Use table alias when joining
         else:
+            base_conditions = ["LOWER(word) = LOWER(?)"]
             base_query = """
                 SELECT word, video_id, start_time, duration 
                 FROM word_clips 
                 WHERE {}
             """
+            video_id_column = "video_id"  # No alias needed without join
         
         if exclude_video_ids:
             # Try to find a clip from a video not in the exclusion list
-            conditions = base_conditions + [f"video_id NOT IN ({','.join('?' * len(exclude_video_ids))})"]
+            conditions = base_conditions + [f"{video_id_column} NOT IN ({','.join('?' * len(exclude_video_ids))})"]
             query = base_query.format(" AND ".join(conditions)) + " LIMIT 1"
             params = base_params + list(exclude_video_ids)
             

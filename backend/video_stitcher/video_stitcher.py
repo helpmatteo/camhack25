@@ -2,6 +2,7 @@
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Callable, Tuple
@@ -174,63 +175,88 @@ class VideoStitcher:
         clips: List[ClipInfo],
         progress_callback: Optional[Callable] = None
     ) -> List[str]:
-        """Download all required video segments.
+        """Download all required video segments in parallel.
         
         Args:
             clips: List of clip information to download.
             progress_callback: Optional callback function(current, total).
             
         Returns:
-            List of downloaded file paths.
+            List of downloaded file paths in same order as input clips.
         """
-        logger.info(f"Downloading {len(clips)} video segments")
+        logger.info(f"Downloading {len(clips)} video segments (parallel)")
         
-        downloaded_paths = []
+        # Use parallel downloads with ThreadPoolExecutor (max 4 concurrent downloads)
+        max_workers = min(4, len(clips))
+        downloaded_paths = [None] * len(clips)  # Preserve order
+        completed = 0
         
-        for i, clip in enumerate(clips, start=1):
+        def download_with_index(index_clip):
+            """Download a clip and return its index and path."""
+            index, clip = index_clip
             try:
-                if progress_callback:
-                    progress_callback(i, len(clips))
-                
                 path = self.downloader.download_segment(clip)
-                downloaded_paths.append(path)
-                
+                return (index, path, None)
             except DownloadError as e:
                 logger.error(f"Failed to download clip for '{clip.word}': {e}")
-                # Continue with other downloads
+                return (index, None, e)
         
-        logger.info(f"Successfully downloaded {len(downloaded_paths)}/{len(clips)} segments")
-        return downloaded_paths
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all downloads
+            future_to_clip = {
+                executor.submit(download_with_index, (i, clip)): (i, clip)
+                for i, clip in enumerate(clips)
+            }
+            
+            # Process as they complete
+            for future in as_completed(future_to_clip):
+                index, path, error = future.result()
+                if path:
+                    downloaded_paths[index] = path
+                
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, len(clips))
+        
+        # Filter out None values (failed downloads)
+        successful_paths = [p for p in downloaded_paths if p is not None]
+        
+        logger.info(f"Successfully downloaded {len(successful_paths)}/{len(clips)} segments")
+        return successful_paths
     
     def process_segments(
         self,
         segment_paths: List[str],
         progress_callback: Optional[Callable] = None
     ) -> List[str]:
-        """Process segments (normalize, re-encode) for concatenation.
+        """Process segments (normalize, re-encode) for concatenation in parallel.
         
         Args:
             segment_paths: List of video segment paths.
             progress_callback: Optional callback function(current, total).
             
         Returns:
-            List of processed file paths.
+            List of processed file paths in same order as input.
         """
-        logger.info(f"Processing {len(segment_paths)} video segments")
+        logger.info(f"Processing {len(segment_paths)} video segments (parallel)")
         
         # Create processed subdirectory
         processed_dir = self.temp_dir / "processed"
         processed_dir.mkdir(parents=True, exist_ok=True)
         
-        processed_paths = []
+        processed_paths = [None] * len(segment_paths)  # Preserve order
+        completed = 0
         
-        for i, segment_path in enumerate(segment_paths, start=1):
-            if progress_callback:
-                progress_callback(i, len(segment_paths))
-            
-            # Generate output path
+        def process_with_index(index_path):
+            """Process a segment and return its index and output path."""
+            index, segment_path = index_path
             original_name = Path(segment_path).stem
             output_path = processed_dir / f"{original_name}_processed.mp4"
+            
+            # Check if already processed (cache)
+            if output_path.exists():
+                logger.debug(f"Using cached processed segment: {output_path.name}")
+                return (index, str(output_path), None)
             
             try:
                 if self.config.normalize_audio:
@@ -251,17 +277,40 @@ class VideoStitcher:
                     # Just re-encode for consistency
                     self.processor.reencode_for_concat(segment_path, str(output_path))
                 
-                processed_paths.append(str(output_path))
                 logger.debug(f"Processed segment: {output_path}")
+                return (index, str(output_path), None)
                 
             except Exception as e:
                 logger.error(f"Failed to process segment {segment_path}: {e}")
-                # Skip this segment
+                return (index, None, e)
+        
+        # Use parallel processing (max 4 concurrent)
+        max_workers = min(4, len(segment_paths))
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all processing tasks
+            future_to_segment = {
+                executor.submit(process_with_index, (i, path)): (i, path)
+                for i, path in enumerate(segment_paths)
+            }
+            
+            # Process as they complete
+            for future in as_completed(future_to_segment):
+                index, path, error = future.result()
+                if path:
+                    processed_paths[index] = path
+                
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, len(segment_paths))
+        
+        # Filter out None values (failed processing)
+        successful_paths = [p for p in processed_paths if p is not None]
         
         logger.info(
-            f"Successfully processed {len(processed_paths)}/{len(segment_paths)} segments"
+            f"Successfully processed {len(successful_paths)}/{len(segment_paths)} segments"
         )
-        return processed_paths
+        return successful_paths
     
     def generate_video(
         self,
