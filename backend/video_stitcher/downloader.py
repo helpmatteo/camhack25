@@ -110,6 +110,9 @@ class VideoSegmentDownloader:
             'socket_timeout': self.config.timeout,
             'download_ranges': self._make_download_range(start_time, end_time),
             'force_keyframes_at_cuts': True,  # Ensure clean cuts at keyframes
+            'ignoreerrors': False,  # Don't ignore errors, we want to catch them
+            'no_check_certificate': False,  # Keep SSL verification
+            'extract_flat': False,  # We need full extraction for segments
         }
         
         # Add cookie authentication if configured
@@ -127,10 +130,6 @@ class VideoSegmentDownloader:
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(youtube_url, download=True)
-            
-            # Give a brief moment for file system to sync
-            import time
-            time.sleep(0.5)
             
             # Track files after download to find what was created
             files_after = set(self.output_dir.glob("*")) if self.output_dir.exists() else set()
@@ -181,9 +180,22 @@ class VideoSegmentDownloader:
             
         except DownloadError:
             raise
+        except yt_dlp.utils.DownloadError as e:
+            # Extract more specific error information from yt-dlp
+            error_msg = str(e)
+            # Check for common error patterns
+            if "Private video" in error_msg or "Video unavailable" in error_msg:
+                error_msg = f"Video unavailable or private: {clip_info.video_id}"
+            elif "HTTP Error" in error_msg or "403" in error_msg:
+                error_msg = f"HTTP error (may be rate limited): {error_msg[:200]}"
+            elif "Unable to download" in error_msg:
+                error_msg = f"Unable to download video: {error_msg[:200]}"
+            
+            logger.error(f"yt-dlp error for '{clip_info.word}' (video {clip_info.video_id}): {error_msg}")
+            raise DownloadError(f"Failed to download segment for '{clip_info.word}': {error_msg}") from e
         except Exception as e:
             error_msg = f"Failed to download segment for '{clip_info.word}': {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"Unexpected error for '{clip_info.word}' (video {clip_info.video_id}): {error_msg}")
             raise DownloadError(error_msg) from e
     
     def _validate_segment(self, file_path: str) -> bool:

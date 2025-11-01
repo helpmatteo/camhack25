@@ -2,6 +2,7 @@
 
 import sqlite3
 import logging
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
@@ -79,10 +80,22 @@ class WordClipDatabase:
         """)
         self.has_transcripts = cursor.fetchone() is not None
         
+        # Check for phrase_index table (optional for fast phrase lookups)
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='phrase_index'
+        """)
+        self.has_phrase_index = cursor.fetchone() is not None
+        
         if self.has_transcripts:
             logger.info("Phrase matching enabled (video_transcripts table found)")
         else:
             logger.info("Phrase matching disabled (video_transcripts table not found)")
+        
+        if self.has_phrase_index:
+            logger.info("Fast phrase lookups enabled (phrase_index table found)")
+        else:
+            logger.info("Fast phrase lookups disabled (phrase_index table not found)")
         
         logger.debug("Database schema verified")
     
@@ -230,26 +243,110 @@ class WordClipDatabase:
         import json
         return json.loads(row['transcript_data'])
     
-    def find_phrase_in_transcripts(
-        self, 
-        phrase: str, 
-        exclude_video_ids: Optional[List[str]] = None, 
+    def _phrase_hash(self, phrase: str) -> str:
+        """Generate MD5 hash of normalized phrase for index lookup."""
+        normalized = phrase.lower().strip()
+        return hashlib.md5(normalized.encode('utf-8')).hexdigest()
+    
+    def _lookup_phrase_index(
+        self,
+        phrase: str,
+        exclude_video_ids: Optional[List[str]] = None,
         channel_id: Optional[str] = None,
         padding_start: float = 0.15,
         padding_end: float = 0.15
     ) -> Optional[ClipInfo]:
-        """Find a phrase (consecutive words) in the video transcripts, optionally excluding certain videos and filtering by channel.
+        """Fast lookup in pre-computed phrase index.
         
         Args:
-            phrase: Space-separated words to find as a consecutive sequence.
-            exclude_video_ids: Optional list of video IDs to exclude from results.
+            phrase: Space-separated words to find.
+            exclude_video_ids: Optional list of video IDs to exclude.
             channel_id: Optional channel ID to filter results to.
             padding_start: Padding before first word start (seconds).
             padding_end: Padding after last word end (seconds).
             
         Returns:
-            ClipInfo with calculated start_time and duration spanning the phrase,
-            or None if phrase is not found in any video.
+            ClipInfo if phrase found in index, None otherwise.
+        """
+        if not self.has_phrase_index:
+            return None
+        
+        cursor = self.connection.cursor()
+        p_hash = self._phrase_hash(phrase)
+        
+        # Build query with optional filters
+        if channel_id:
+            # Join with videos table for channel filter
+            base_query = """
+                SELECT pi.video_id, pi.start_time, pi.end_time, pi.phrase_text
+                FROM phrase_index pi
+                JOIN videos v ON pi.video_id = v.video_id
+                WHERE pi.phrase_hash = ?
+                AND v.channel_id = ?
+            """
+            params = [p_hash, channel_id]
+        else:
+            base_query = """
+                SELECT video_id, start_time, end_time, phrase_text
+                FROM phrase_index
+                WHERE phrase_hash = ?
+            """
+            params = [p_hash]
+        
+        # Try to find phrase NOT in excluded videos first
+        if exclude_video_ids:
+            exclusion_filter = f" AND video_id NOT IN ({','.join('?' * len(exclude_video_ids))})"
+            query = base_query + exclusion_filter + " LIMIT 1"
+            cursor.execute(query, params + list(exclude_video_ids))
+            
+            row = cursor.fetchone()
+            if row:
+                # Found in non-excluded video - apply padding
+                start_time = max(0, row['start_time'] - padding_start)
+                end_time = row['end_time'] + padding_end
+                duration = end_time - start_time
+                
+                logger.info(f"Found phrase '{phrase}' in phrase_index (non-repeated video {row['video_id']})")
+                return ClipInfo(
+                    word=phrase,
+                    video_id=row['video_id'],
+                    start_time=start_time,
+                    duration=duration
+                )
+        
+        # No exclusion or no non-excluded match found, try any video
+        query = base_query + " LIMIT 1"
+        cursor.execute(query, params)
+        
+        row = cursor.fetchone()
+        if row:
+            # Apply padding
+            start_time = max(0, row['start_time'] - padding_start)
+            end_time = row['end_time'] + padding_end
+            duration = end_time - start_time
+            
+            logger.info(f"Found phrase '{phrase}' in phrase_index (video {row['video_id']})")
+            return ClipInfo(
+                word=phrase,
+                video_id=row['video_id'],
+                start_time=start_time,
+                duration=duration
+            )
+        
+        return None
+    
+    def _scan_transcripts_for_phrase(
+        self,
+        phrase: str,
+        exclude_video_ids: Optional[List[str]] = None,
+        channel_id: Optional[str] = None,
+        padding_start: float = 0.15,
+        padding_end: float = 0.15
+    ) -> Optional[ClipInfo]:
+        """Fallback method: scan transcripts directly for phrase (slower).
+        
+        This is the original implementation, kept as a fallback for when
+        the phrase index doesn't contain the phrase (rare phrases).
         """
         if not self.has_transcripts:
             return None
@@ -324,6 +421,54 @@ class WordClipDatabase:
         
         logger.debug(f"Phrase not found in any transcript: {phrase}")
         return None
+    
+    def find_phrase_in_transcripts(
+        self, 
+        phrase: str, 
+        exclude_video_ids: Optional[List[str]] = None, 
+        channel_id: Optional[str] = None,
+        padding_start: float = 0.15,
+        padding_end: float = 0.15
+    ) -> Optional[ClipInfo]:
+        """Find a phrase (consecutive words) in the video transcripts or phrase index.
+        
+        This method first tries the fast phrase_index lookup. If the phrase is not
+        found in the index (rare phrases), it falls back to scanning transcripts directly.
+        
+        Args:
+            phrase: Space-separated words to find as a consecutive sequence.
+            exclude_video_ids: Optional list of video IDs to exclude from results.
+            channel_id: Optional channel ID to filter results to.
+            padding_start: Padding before first word start (seconds).
+            padding_end: Padding after last word end (seconds).
+            
+        Returns:
+            ClipInfo with calculated start_time and duration spanning the phrase,
+            or None if phrase is not found in any video.
+        """
+        # Try fast lookup in phrase index first (if available)
+        if self.has_phrase_index:
+            result = self._lookup_phrase_index(
+                phrase,
+                exclude_video_ids=exclude_video_ids,
+                channel_id=channel_id,
+                padding_start=padding_start,
+                padding_end=padding_end
+            )
+            if result:
+                return result
+            
+            # Not in index, fall back to transcript scan
+            logger.debug(f"Phrase '{phrase}' not in index, falling back to transcript scan")
+        
+        # Fall back to scanning transcripts (slower but more comprehensive)
+        return self._scan_transcripts_for_phrase(
+            phrase,
+            exclude_video_ids=exclude_video_ids,
+            channel_id=channel_id,
+            padding_start=padding_start,
+            padding_end=padding_end
+        )
     
     def get_database_stats(self) -> dict:
         """Get statistics about the database.

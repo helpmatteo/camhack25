@@ -3,11 +3,14 @@ Ingest WhisperX word-level transcription data into the database.
 
 This script parses the live_whisperx_526k_with_seeks.jsonl file and populates
 the word_clips table with word-level timing information from YouTube videos.
+
+It also builds the phrase_index for fast phrase lookups (2-5 word phrases).
 """
 
 import json
 import sqlite3
 import sys
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -104,12 +107,32 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
     
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_video_transcripts_video_id ON video_transcripts(video_id)")
     
+    # Create phrase_index table (for fast phrase lookups)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS phrase_index (
+            phrase_hash TEXT NOT NULL,
+            phrase_text TEXT NOT NULL,
+            video_id TEXT NOT NULL,
+            start_time REAL NOT NULL,
+            end_time REAL NOT NULL,
+            word_count INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (phrase_hash, video_id, start_time)
+        )
+    """)
+    
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_hash ON phrase_index(phrase_hash)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_text ON phrase_index(phrase_text)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_phrase_video ON phrase_index(video_id)")
+    
     print(f"Reading JSONL file: {jsonl_path}")
     
     total_words = 0
     total_entries = 0
     total_transcripts = 0
+    total_phrases = 0
     batch = []
+    phrase_batch = []
     
     with open(jsonl_path, 'r', encoding='utf-8') as f:
         for line_num, line in enumerate(f, 1):
@@ -172,6 +195,11 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
                                             VALUES (?, ?, ?, ?)
                                         """, (video_id, transcript_json, len(words), duration))
                                         total_transcripts += 1
+                                        
+                                        # Extract phrases for phrase_index (2-5 word phrases)
+                                        phrases = extract_phrases_from_words(words, video_id)
+                                        phrase_batch.extend(phrases)
+                                        total_phrases += len(phrases)
                                     
                                     break
                     
@@ -184,8 +212,18 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
                             batch
                         )
                         conn.commit()
-                        print(f"Processed {total_entries} entries, {total_words} words, {total_transcripts} transcripts...")
+                        print(f"Processed {total_entries} entries, {total_words} words, {total_transcripts} transcripts, {total_phrases} phrases...")
                         batch = []
+                    
+                    # Insert phrase batch
+                    if len(phrase_batch) >= batch_size:
+                        cursor.executemany("""
+                            INSERT OR IGNORE INTO phrase_index 
+                            (phrase_hash, phrase_text, video_id, start_time, end_time, word_count)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, phrase_batch)
+                        conn.commit()
+                        phrase_batch = []
             
             except json.JSONDecodeError as e:
                 print(f"Error parsing line {line_num}: {e}")
@@ -194,12 +232,20 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
                 print(f"Error processing line {line_num}: {e}")
                 continue
     
-    # Insert remaining batch
+    # Insert remaining batches
     if batch:
         cursor.executemany(
             "INSERT OR IGNORE INTO word_clips (word, video_id, start_time, duration) VALUES (?, ?, ?, ?)",
             batch
         )
+        conn.commit()
+    
+    if phrase_batch:
+        cursor.executemany("""
+            INSERT OR IGNORE INTO phrase_index 
+            (phrase_hash, phrase_text, video_id, start_time, end_time, word_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, phrase_batch)
         conn.commit()
     
     # Get statistics
@@ -215,6 +261,12 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
     cursor.execute("SELECT COUNT(*) FROM video_transcripts")
     total_transcripts_db = cursor.fetchone()[0]
     
+    cursor.execute("SELECT COUNT(*) FROM phrase_index")
+    total_phrases_in_db = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(DISTINCT phrase_hash) FROM phrase_index")
+    unique_phrases = cursor.fetchone()[0]
+    
     conn.close()
     
     print(f"\n{'='*60}")
@@ -225,6 +277,8 @@ def ingest_jsonl(jsonl_path: str, db_path: str, batch_size: int = 1000):
     print(f"Total transcripts stored: {total_transcripts_db}")
     print(f"Unique words: {unique_words}")
     print(f"Unique videos: {unique_videos}")
+    print(f"Total phrases indexed: {total_phrases_in_db}")
+    print(f"Unique phrases: {unique_phrases}")
     print(f"{'='*60}\n")
 
 

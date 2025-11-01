@@ -65,9 +65,12 @@ class VideoProcessor:
         """
         logger.info(f"Normalizing audio: {input_path} -> {output_path}")
         
+        # Explicitly map streams to ensure they're processed correctly
         cmd = [
             'ffmpeg',
             '-i', input_path,
+            '-map', '0:v',           # Map video stream explicitly
+            '-map', '0:a',           # Map audio stream explicitly (required for loudnorm)
             '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
             '-c:v', 'libx264',       # Re-encode video for consistency
             '-preset', 'ultrafast',
@@ -91,6 +94,10 @@ class VideoProcessor:
                 text=True,
                 timeout=30  # Add timeout to prevent hanging on corrupted files
             )
+            # Validate output file has valid streams
+            if not Path(output_path).exists() or Path(output_path).stat().st_size < 1000:
+                raise RuntimeError(f"Normalized file is empty or missing: {output_path}")
+            
             logger.debug(f"Audio normalization completed: {output_path}")
         except subprocess.TimeoutExpired:
             error_msg = f"Audio normalization timed out (file may be corrupted): {input_path}"
@@ -119,9 +126,12 @@ class VideoProcessor:
         """
         logger.info(f"Re-encoding video: {input_path} -> {output_path}")
         
+        # Explicitly map streams to ensure they're processed correctly
+        # Use -map 0 to map all streams, which handles missing audio gracefully
         cmd = [
             'ffmpeg',
             '-i', input_path,
+            '-map', '0',             # Map all streams (handles missing audio)
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-crf', '23',
@@ -142,9 +152,19 @@ class VideoProcessor:
                 cmd,
                 capture_output=True,
                 check=True,
-                text=True
+                text=True,
+                timeout=60  # Add timeout to prevent hanging
             )
+            
+            # Validate output file has valid streams
+            if not Path(output_path).exists() or Path(output_path).stat().st_size < 1000:
+                raise RuntimeError(f"Re-encoded file is empty or missing: {output_path}")
+            
             logger.debug(f"Re-encoding completed: {output_path}")
+        except subprocess.TimeoutExpired:
+            error_msg = f"Re-encoding timed out: {input_path}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
         except subprocess.CalledProcessError as e:
             error_msg = f"Re-encoding failed: {e.stderr}"
             logger.error(error_msg)
@@ -319,9 +339,11 @@ class VideoProcessor:
             f"boxborderw=10"
         )
         
+        # Explicitly map streams to ensure they're processed correctly
         cmd = [
             'ffmpeg',
             '-i', input_path,
+            '-map', '0',             # Map all streams (handles missing audio)
             '-vf', drawtext_filter,
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
@@ -383,9 +405,11 @@ class VideoProcessor:
             f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color={pad_color}"
         )
         
+        # Explicitly map streams to ensure they're processed correctly
         cmd = [
             'ffmpeg',
             '-i', input_path,
+            '-map', '0',             # Map all streams (handles missing audio)
             '-vf', scale_filter,
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
@@ -458,9 +482,11 @@ class VideoProcessor:
             f"shadowy=2"
         )
         
+        # Explicitly map streams to ensure they're processed correctly
         cmd = [
             'ffmpeg',
             '-i', input_path,
+            '-map', '0',             # Map all streams (handles missing audio)
             '-vf', drawtext_filter,
             '-c:v', 'libx264',
             '-preset', 'ultrafast',

@@ -80,6 +80,13 @@ class GenerateVideoRequest(BaseModel):
     watermark_text: Optional[str] = None  # Watermark text
     intro_text: Optional[str] = None  # Intro card text
     outro_text: Optional[str] = None  # Outro card text
+    
+    # Parallel processing options
+    max_download_workers: Optional[int] = 3  # Max concurrent downloads (1-10)
+    max_processing_workers: Optional[int] = 4  # Max concurrent processing tasks (1-10)
+    download_timeout: Optional[int] = 300  # Download timeout in seconds
+    processing_timeout: Optional[int] = 600  # Processing timeout in seconds
+    max_failure_rate: Optional[float] = 0.5  # Maximum acceptable failure rate (0.0-1.0)
 
 
 class GenerateVideoResponse(BaseModel):
@@ -139,7 +146,13 @@ def generate_video(request: GenerateVideoRequest):
             aspect_ratio=request.aspect_ratio or "16:9",
             watermark_text=request.watermark_text,
             intro_text=request.intro_text,
-            outro_text=request.outro_text
+            outro_text=request.outro_text,
+            # Parallel processing options
+            max_download_workers=request.max_download_workers or 3,
+            max_processing_workers=request.max_processing_workers or 4,
+            download_timeout=request.download_timeout or 300,
+            processing_timeout=request.processing_timeout or 600,
+            max_failure_rate=request.max_failure_rate or 0.5
         )
         
         # Generate unique filename
