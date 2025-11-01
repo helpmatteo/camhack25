@@ -96,7 +96,7 @@ def generate_video(request: GenerateVideoRequest):
             temp_directory="./temp",
             video_quality="bestvideo[height<=720]+bestaudio/best[height<=720]",
             normalize_audio=True,
-            incremental_stitching=True,
+            incremental_stitching=False,  # Use fast batch concatenation
             cleanup_temp_files=True,
             max_phrase_length=max_phrase_length
         )

@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -353,6 +354,9 @@ class VideoStitcher:
             ValueError: If no clips found for any words.
             RuntimeError: If video generation fails.
         """
+        start_time = time.time()
+        phase_times = {}
+        
         logger.info(f"Starting video generation from text: '{text}'")
         
         try:
@@ -360,14 +364,20 @@ class VideoStitcher:
             output_path = self.output_dir / output_filename
             
             # Step 1: Parse text into words
+            phase_start = time.time()
             logger.info("Step 1/5: Parsing text")
             words = self.parse_text(text)
             if not words:
                 raise ValueError("No words found in input text")
+            phase_times['parse'] = time.time() - phase_start
+            logger.info(f"✓ Parsing completed in {phase_times['parse']:.2f}s")
             
             # Step 2: Lookup clips in database
+            phase_start = time.time()
             logger.info("Step 2/5: Looking up clips in database")
             clips, missing_words = self.lookup_clips(words)
+            phase_times['lookup'] = time.time() - phase_start
+            logger.info(f"✓ Lookup completed in {phase_times['lookup']:.2f}s")
             
             if not clips:
                 raise ValueError(
@@ -380,20 +390,27 @@ class VideoStitcher:
                 )
             
             # Step 3: Download segments
+            phase_start = time.time()
             logger.info("Step 3/5: Downloading video segments")
             segments = self.download_all_segments(clips, progress_callback)
+            phase_times['download'] = time.time() - phase_start
+            logger.info(f"✓ Download completed in {phase_times['download']:.2f}s")
             
             if not segments:
                 raise RuntimeError("Failed to download any video segments")
             
             # Step 4: Process segments
+            phase_start = time.time()
             logger.info("Step 4/5: Processing video segments")
             processed = self.process_segments(segments, progress_callback)
+            phase_times['process'] = time.time() - phase_start
+            logger.info(f"✓ Processing completed in {phase_times['process']:.2f}s")
             
             if not processed:
                 raise RuntimeError("Failed to process any video segments")
             
             # Step 5: Concatenate into final video (use batch mode for speed)
+            phase_start = time.time()
             logger.info("Step 5/5: Concatenating videos")
             if self.config.incremental_stitching:
                 # Slower incremental method (kept for compatibility)
@@ -401,7 +418,22 @@ class VideoStitcher:
             else:
                 # Fast batch concatenation (default)
                 self.concatenator.concatenate_videos(processed, str(output_path))
+            phase_times['concatenate'] = time.time() - phase_start
+            logger.info(f"✓ Concatenation completed in {phase_times['concatenate']:.2f}s")
             
+            # Calculate total time and display summary
+            total_time = time.time() - start_time
+            logger.info("=" * 60)
+            logger.info("VIDEO GENERATION PERFORMANCE SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"  Parse text:       {phase_times.get('parse', 0):.2f}s ({phase_times.get('parse', 0)/total_time*100:.1f}%)")
+            logger.info(f"  Lookup clips:     {phase_times.get('lookup', 0):.2f}s ({phase_times.get('lookup', 0)/total_time*100:.1f}%)")
+            logger.info(f"  Download videos:  {phase_times.get('download', 0):.2f}s ({phase_times.get('download', 0)/total_time*100:.1f}%)")
+            logger.info(f"  Process videos:   {phase_times.get('process', 0):.2f}s ({phase_times.get('process', 0)/total_time*100:.1f}%)")
+            logger.info(f"  Concatenate:      {phase_times.get('concatenate', 0):.2f}s ({phase_times.get('concatenate', 0)/total_time*100:.1f}%)")
+            logger.info("-" * 60)
+            logger.info(f"  TOTAL TIME:       {total_time:.2f}s")
+            logger.info("=" * 60)
             logger.info(f"Video generation completed: {output_path}")
             
             return str(output_path.resolve())
