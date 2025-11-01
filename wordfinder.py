@@ -1,136 +1,102 @@
-import sqlite3
-import random
-import time
-from googleapiclient.discovery import build
-from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled, VideoUnavailable
+import json
+from typing import List, Dict
 
-API_KEY = "YOUR_YOUTUBE_API_KEY"
-youtube = build("youtube", "v3", developerKey=API_KEY)
+def load_jsonl(file_path: str):
+    """Generator that yields each line (JSON object or list) from a JSONL file."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
 
-DB_FILE = "youtube_transcripts.db"
 
-# ---------- DATABASE SETUP ----------
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS videos (
-            id TEXT PRIMARY KEY,
-            title TEXT,
-            channel TEXT,
-            transcript TEXT
-        )
-    """)
-    # Full-text index for fast search
-    cur.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts 
-        USING fts5(id, transcript)
-    """)
-    conn.commit()
-    conn.close()
-
-# ---------- DATA ACCESS HELPERS ----------
-def insert_video(video_id, title, channel, transcript):
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("REPLACE INTO videos (id, title, channel, transcript) VALUES (?, ?, ?, ?)",
-                (video_id, title, channel, transcript))
-    cur.execute("REPLACE INTO transcripts_fts (id, transcript) VALUES (?, ?)", (video_id, transcript))
-    conn.commit()
-    conn.close()
-
-def video_exists(video_id):
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM videos WHERE id=?", (video_id,))
-    exists = cur.fetchone() is not None
-    conn.close()
-    return exists
-
-def search_word(word):
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM transcripts_fts WHERE transcripts_fts MATCH ?", (word,))
-    results = cur.fetchall()
-    conn.close()
-    return [r[0] for r in results]
-
-# ---------- YOUTUBE HELPERS ----------
-def fetch_playlist_videos(playlist_id, limit=100):
-    """Get up to `limit` videos from a playlist."""
+def find_text_in_timestamps(word_entries: list, query: str) -> list:
+    """
+    Given a list of [start, end, word] or {"start":..., "end":..., "word":...} entries,
+    return matches with timestamps for each word in the query.
+    """
+    query_tokens = query.strip().split()
+    n = len(query_tokens)
     results = []
-    page_token = None
-    while len(results) < limit:
-        req = youtube.playlistItems().list(
-            part="snippet",
-            playlistId=playlist_id,
-            maxResults=min(50, limit - len(results)),
-            pageToken=page_token
-        )
-        resp = req.execute()
-        for item in resp.get("items", []):
-            vid = item["snippet"]["resourceId"]["videoId"]
-            title = item["snippet"]["title"]
-            channel = item["snippet"]["channelTitle"]
-            results.append((vid, title, channel))
-        page_token = resp.get("nextPageToken")
-        if not page_token:
-            break
+
+    # Extract words safely
+    words = []
+    for entry in word_entries:
+        if isinstance(entry, list) and len(entry) >= 3:
+            words.append(entry[2])
+        elif isinstance(entry, dict) and "word" in entry:
+            words.append(entry["word"])
+        else:
+            words.append("")  # placeholder for malformed entries
+
+    for i in range(len(words) - n + 1):
+        window = [w.lower() for w in words[i:i+n]]
+        if window == [qt.lower() for qt in query_tokens]:
+            # extract timestamps
+            matched_words = word_entries[i:i+n]
+            clip_words = []
+            for w in matched_words:
+                if isinstance(w, list):
+                    clip_words.append({"word": w[2], "start": w[0], "end": w[1]})
+                elif isinstance(w, dict):
+                    clip_words.append({"word": w["word"], "start": w["start"], "end": w["end"]})
+            results.append({
+                "start_time": clip_words[0]["start"],
+                "end_time": clip_words[-1]["end"],
+                "words": clip_words
+            })
+
     return results
 
-def fetch_channel_uploads(channel_id, limit=100):
-    """Fetch recent uploads from a channel by channel_id."""
-    # First get uploads playlist
-    req = youtube.channels().list(part="contentDetails", id=channel_id)
-    resp = req.execute()
-    uploads_id = resp["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
-    return fetch_playlist_videos(uploads_id, limit)
 
-def get_transcript_text(video_id):
-    """Try to fetch transcript text."""
-    try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        return " ".join(entry["text"] for entry in transcript)
-    except (NoTranscriptFound, TranscriptsDisabled, VideoUnavailable):
-        return None
-    except Exception as e:
-        print(f"Error fetching transcript for {video_id}: {e}")
-        return None
 
-# ---------- PREPOPULATE ----------
-def prepopulate_from_channel(channel_id, limit=100):
-    print(f"Prepopulating from channel {channel_id} (up to {limit} videos)...")
-    videos = fetch_channel_uploads(channel_id, limit)
-    for vid, title, channel in videos:
-        if video_exists(vid):
-            continue
-        txt = get_transcript_text(vid)
-        if txt:
-            insert_video(vid, title, channel, txt)
-            print(f"✔️ Cached {title[:40]}...")
+def search_dataset(file_path: str, query: str, max_videos: int = 10, max_results: int = 10):
+    """
+    Search through the local JSONL dataset for the given query string.
+    Returns a list of matches with video IDs and word-level timestamps.
+    """
+    results = []
+    for i, record in enumerate(load_jsonl(file_path)):
+        if i >= max_videos:
+            break
+
+        # Try to extract the actual list of [start, end, word]
+        if isinstance(record, dict):
+            # Some records might have fields like "segments", "words", or "data"
+            word_entries = record.get("segments") or record.get("words") or record.get("data")
+            video_id = record.get("video_id", f"video_{i}")
+        elif isinstance(record, list):
+            word_entries = record
+            video_id = f"video_{i}"
         else:
-            print(f"❌ No transcript for {title[:40]}")
-        time.sleep(0.2)  # be nice to YouTube
+            continue  # Skip unexpected structures
 
-# ---------- MAIN SEARCH ----------
-def find_word(word):
-    ids = search_word(word)
-    if not ids:
-        print(f"No cached transcripts contain '{word}'.")
-        return None
-    vid = random.choice(ids)
-    print(f"✅ Found '{word}' in https://www.youtube.com/watch?v={vid}")
-    return vid
+        if not isinstance(word_entries, list):
+            continue
 
-# ---------- RUN ----------
+        matches = find_text_in_timestamps(word_entries, query)
+        for m in matches:
+            m["video_id"] = video_id
+            results.append(m)
+            if len(results) >= max_results:
+                return results
+
+    return results
+
+
 if __name__ == "__main__":
-    init_db()
-    choice = input("Prepopulate (p) or search (s)? ").strip().lower()
+    dataset_path = r"C:\Users\thoma\Downloads\live_whisperx_526k_with_seeks.jsonl"
+    query_text = "we"  # 🔍 your search text
 
-    if choice == "p":
-        ch_id = input("Enter channel ID (not username): ").strip()
-        prepopulate_from_channel(ch_id, limit=100)
+    matches = search_dataset(dataset_path, query_text, max_videos=50, max_results=5)
 
-    elif choice == "s":
-        word = input("Enter word to search for: ").lower().strip()
-        find_word(word)
+    if not matches:
+        print("❌ No matches found.")
+    else:
+        for m in matches:
+            print(f"\n🎥 Video ID: {m['video_id']}")
+            print(f"🕒 Clip: {m['start_time']:.2f}s → {m['end_time']:.2f}s")
+            print("🗣️ Words:")
+            for w in m["words"]:
+                print(f"  {w['word']}  {w['start']} → {w['end']}")
