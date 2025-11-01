@@ -107,6 +107,15 @@ Examples:
     )
     
     parser.add_argument(
+        '--max-phrase-length',
+        type=int,
+        default=10,
+        choices=range(1, 51),
+        metavar='[1-50]',
+        help='Maximum number of consecutive words to match as a phrase (default: 10, range: 1-50)'
+    )
+    
+    parser.add_argument(
         '--no-normalize',
         action='store_true',
         help='Disable audio normalization'
@@ -145,7 +154,8 @@ Examples:
             video_quality=args.quality,
             normalize_audio=not args.no_normalize,
             incremental_stitching=True,
-            cleanup_temp_files=not args.no_cleanup
+            cleanup_temp_files=not args.no_cleanup,
+            max_phrase_length=args.max_phrase_length
         )
         
         # Print summary
@@ -155,6 +165,7 @@ Examples:
         print(f"Input text: {args.text}")
         print(f"Database: {args.database}")
         print(f"Output: {args.output_dir}/{args.output}")
+        print(f"Max phrase length: {config.max_phrase_length} words")
         print(f"Audio normalization: {'enabled' if config.normalize_audio else 'disabled'}")
         print(f"Cleanup temp files: {'yes' if config.cleanup_temp_files else 'no'}")
         print("="*60 + "\n")

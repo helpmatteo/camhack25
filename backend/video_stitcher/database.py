@@ -86,20 +86,48 @@ class WordClipDatabase:
         
         logger.debug("Database schema verified")
     
-    def get_clip_info(self, word: str) -> Optional[ClipInfo]:
-        """Look up clip information for a single word.
+    def get_clip_info(self, word: str, exclude_video_ids: Optional[List[str]] = None) -> Optional[ClipInfo]:
+        """Look up clip information for a single word, optionally excluding certain videos.
         
         Args:
             word: The word to search for (case-insensitive).
+            exclude_video_ids: Optional list of video IDs to exclude from results.
             
         Returns:
             ClipInfo object if word is found, None otherwise.
         """
         cursor = self.connection.cursor()
+        
+        if exclude_video_ids:
+            # Try to find a clip from a video not in the exclusion list
+            placeholders = ','.join('?' * len(exclude_video_ids))
+            cursor.execute(f"""
+                SELECT word, video_id, start_time, duration 
+                FROM word_clips 
+                WHERE LOWER(word) = LOWER(?)
+                AND video_id NOT IN ({placeholders})
+                LIMIT 1
+            """, (word, *exclude_video_ids))
+            
+            row = cursor.fetchone()
+            if row is not None:
+                logger.debug(f"Found non-repeated video for word '{word}': {row['video_id']}")
+                return ClipInfo(
+                    word=row['word'],
+                    video_id=row['video_id'],
+                    start_time=row['start_time'],
+                    duration=row['duration']
+                )
+            
+            # If no alternative found, fall back to any video (including excluded ones)
+            logger.debug(f"No alternative video found for '{word}', using any available")
+        
+        # Standard query without exclusions
         cursor.execute("""
             SELECT word, video_id, start_time, duration 
             FROM word_clips 
             WHERE LOWER(word) = LOWER(?)
+            LIMIT 1
         """, (word,))
         
         row = cursor.fetchone()
@@ -184,11 +212,12 @@ class WordClipDatabase:
         import json
         return json.loads(row['transcript_data'])
     
-    def find_phrase_in_transcripts(self, phrase: str) -> Optional[ClipInfo]:
-        """Find a phrase (consecutive words) in the video transcripts.
+    def find_phrase_in_transcripts(self, phrase: str, exclude_video_ids: Optional[List[str]] = None) -> Optional[ClipInfo]:
+        """Find a phrase (consecutive words) in the video transcripts, optionally excluding certain videos.
         
         Args:
             phrase: Space-separated words to find as a consecutive sequence.
+            exclude_video_ids: Optional list of video IDs to exclude from results.
             
         Returns:
             ClipInfo with calculated start_time and duration spanning the phrase,
@@ -205,6 +234,8 @@ class WordClipDatabase:
         cursor = self.connection.cursor()
         cursor.execute("SELECT video_id, transcript_data FROM video_transcripts")
         
+        # First pass: try to find in videos NOT in exclusion list
+        found_excluded = None
         for row in cursor.fetchall():
             video_id = row['video_id']
             transcript = json.loads(row['transcript_data'])
@@ -224,14 +255,29 @@ class WordClipDatabase:
                     end_time = transcript[i + len(words) - 1][2]  # End of last word
                     duration = end_time - start_time
                     
-                    logger.info(f"Found phrase '{phrase}' in video {video_id}: {start_time}s-{end_time}s")
-                    
-                    return ClipInfo(
+                    clip = ClipInfo(
                         word=phrase,  # Store the full phrase
                         video_id=video_id,
                         start_time=start_time,
                         duration=duration
                     )
+                    
+                    # If this video is not excluded, return immediately
+                    if not exclude_video_ids or video_id not in exclude_video_ids:
+                        logger.info(f"Found phrase '{phrase}' in non-repeated video {video_id}: {start_time}s-{end_time}s")
+                        return clip
+                    
+                    # Store the first match from excluded videos as fallback
+                    if found_excluded is None:
+                        found_excluded = clip
+                        logger.debug(f"Found phrase '{phrase}' in excluded video {video_id}, continuing search...")
+                    
+                    break  # Only use first occurrence per video
+        
+        # If we only found it in excluded videos, use that as fallback
+        if found_excluded is not None:
+            logger.info(f"No alternative found for phrase '{phrase}', using repeated video {found_excluded.video_id}")
+            return found_excluded
         
         logger.debug(f"Phrase not found in any transcript: {phrase}")
         return None

@@ -49,13 +49,13 @@ async function searchExact(phrase, lang = "en") {
   return response.json();
 }
 
-async function generateVideo(text, lang = "en") {
+async function generateVideo(text, lang = "en", maxPhraseLength = 10) {
   const response = await fetch(`${API}/generate-video`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ text, lang }),
+    body: JSON.stringify({ text, lang, max_phrase_length: maxPhraseLength }),
   });
   if (!response.ok) {
     const error = await response.text();
@@ -223,6 +223,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [generatingVideo, setGeneratingVideo] = useState(false);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState(null);
+  const [maxPhraseLength, setMaxPhraseLength] = useState(10);
 
   async function compose() {
     setError("");
@@ -271,7 +272,7 @@ export default function App() {
     
     setGeneratingVideo(true);
     try {
-      const result = await generateVideo(text, lang);
+      const result = await generateVideo(text, lang, maxPhraseLength);
       
       if (result.status === "success" && result.video_url) {
         setGeneratedVideoUrl(`${API}${result.video_url}`);
@@ -327,6 +328,39 @@ export default function App() {
               {generatingVideo ? "Generating…" : "Generate Video"}
             </button>
           </div>
+        </div>
+
+        <div className="mb-6 p-4 bg-white/40 rounded-xl border border-green-800/30">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-semibold text-emerald-900">
+              Max Phrase Length: <span className="text-purple-700">{maxPhraseLength} word{maxPhraseLength !== 1 ? 's' : ''}</span>
+            </label>
+            <span className="text-xs text-emerald-900/70">
+              {maxPhraseLength === 1 ? 'Individual words only' : 
+               maxPhraseLength <= 5 ? 'Short phrases' : 
+               maxPhraseLength <= 15 ? 'Medium phrases' : 
+               'Long phrases'}
+            </span>
+          </div>
+          <input
+            type="range"
+            min="1"
+            max="50"
+            value={maxPhraseLength}
+            onChange={(e) => setMaxPhraseLength(parseInt(e.target.value))}
+            className="w-full h-2 bg-emerald-200 rounded-lg appearance-none cursor-pointer accent-purple-700"
+            style={{
+              background: `linear-gradient(to right, #7c3aed 0%, #7c3aed ${((maxPhraseLength - 1) / 49) * 100}%, #d1fae5 ${((maxPhraseLength - 1) / 49) * 100}%, #d1fae5 100%)`
+            }}
+          />
+          <div className="flex justify-between text-xs text-emerald-900/60 mt-1">
+            <span>1</span>
+            <span>25</span>
+            <span>50</span>
+          </div>
+          <p className="text-xs text-emerald-900/70 mt-2">
+            Higher values create smoother videos by matching longer consecutive word sequences from the same video clip.
+          </p>
         </div>
 
         {error && <div className="text-red-600 text-sm mt-2 mb-4">{error}</div>}

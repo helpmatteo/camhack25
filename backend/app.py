@@ -52,6 +52,7 @@ def search(q: str, lang: Optional[str] = None, limit: int = 20):
 class GenerateVideoRequest(BaseModel):
     text: str
     lang: Optional[str] = "en"
+    max_phrase_length: Optional[int] = 10  # Default to 10, range 1-50
 
 
 class GenerateVideoResponse(BaseModel):
@@ -82,6 +83,11 @@ def generate_video(request: GenerateVideoRequest):
         raise HTTPException(400, detail="No valid words found in text")
     
     try:
+        # Validate max_phrase_length
+        max_phrase_length = request.max_phrase_length or 10
+        if not (1 <= max_phrase_length <= 50):
+            raise HTTPException(400, detail="max_phrase_length must be between 1 and 50")
+        
         # Use the existing video_stitcher with word_clips database
         # Note: we're using the youglish.db which should have word_clips table
         config = StitchingConfig(
@@ -91,7 +97,8 @@ def generate_video(request: GenerateVideoRequest):
             video_quality="bestvideo[height<=720]+bestaudio/best[height<=720]",
             normalize_audio=True,
             incremental_stitching=True,
-            cleanup_temp_files=True
+            cleanup_temp_files=True,
+            max_phrase_length=max_phrase_length
         )
         
         # Generate unique filename

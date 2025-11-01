@@ -25,6 +25,7 @@ class StitchingConfig:
     incremental_stitching: bool = True
     cleanup_temp_files: bool = True
     verify_ffmpeg_on_init: bool = True  # Set to False to skip ffmpeg verification
+    max_phrase_length: int = 10  # Maximum number of consecutive words to match as a phrase (1-50)
 
 
 class VideoStitcher:
@@ -88,8 +89,8 @@ class VideoStitcher:
         """Look up clips for words in database, with phrase matching optimization.
         
         This method attempts to find longer consecutive phrases from the same video
-        before falling back to individual word lookups. This creates smoother videos
-        with fewer cuts when multiple consecutive words come from the same source.
+        before falling back to individual word lookups. It also tries to avoid
+        repeating videos unless necessary, creating more diverse output.
         
         Args:
             words: List of words to look up.
@@ -101,6 +102,7 @@ class VideoStitcher:
         
         found_clips = []
         missing_words = []
+        used_video_ids = []  # Track videos we've already used
         i = 0
         
         while i < len(words):
@@ -110,11 +112,11 @@ class VideoStitcher:
             
             # Only try phrase matching if transcripts are available
             if self.database.has_transcripts:
-                # Try phrases from longest to shortest (max 10 words)
-                max_phrase_len = min(10, len(words) - i)
+                # Try phrases from longest to shortest (using configured max_phrase_length)
+                max_phrase_len = min(self.config.max_phrase_length, len(words) - i)
                 for phrase_len in range(max_phrase_len, 1, -1):  # Start from longest
                     phrase = ' '.join(words[i:i + phrase_len])
-                    clip_info = self.database.find_phrase_in_transcripts(phrase)
+                    clip_info = self.database.find_phrase_in_transcripts(phrase, exclude_video_ids=used_video_ids)
                     
                     if clip_info is not None:
                         best_clip = clip_info
@@ -125,19 +127,28 @@ class VideoStitcher:
             # If phrase matching succeeded, use it
             if best_clip is not None:
                 found_clips.append(best_clip)
+                used_video_ids.append(best_clip.video_id)
                 i += best_length
             else:
                 # Fall back to single word lookup
                 word = words[i]
-                clip_info = self.database.get_clip_info(word)
+                clip_info = self.database.get_clip_info(word, exclude_video_ids=used_video_ids)
                 
                 if clip_info is None:
                     missing_words.append(word)
                     logger.warning(f"No clip found for word: {word}")
                 else:
                     found_clips.append(clip_info)
+                    used_video_ids.append(clip_info.video_id)
                 
                 i += 1
+        
+        # Log video diversity stats
+        unique_videos = len(set(used_video_ids))
+        if unique_videos < len(used_video_ids):
+            logger.info(f"Video diversity: {unique_videos} unique videos used for {len(found_clips)} clips")
+        else:
+            logger.info(f"Video diversity: All clips from different videos ({unique_videos} unique)")
         
         logger.info(
             f"Found {len(found_clips)} clips, {len(missing_words)} words missing"
