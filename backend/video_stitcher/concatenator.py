@@ -79,25 +79,27 @@ class VideoConcatenator:
         # Create concat file
         concat_file = self.create_concat_file(video_paths)
         
-        # Run ffmpeg concat command with re-encoding for compatibility
-        # This ensures all videos are properly stitched even with different codecs
+        # Run ffmpeg concat command with optimized re-encoding
+        # Re-encode to ensure compatibility between all segments
         cmd = [
             'ffmpeg',
             '-f', 'concat',
             '-safe', '0',
             '-i', concat_file,
-            '-c:v', 'libx264',      # Re-encode video to h264
-            '-preset', 'medium',     # Balanced encoding speed/quality
+            '-c:v', 'libx264',       # Re-encode video to h264
+            '-preset', 'veryfast',   # Fast encoding
             '-crf', '23',            # Good quality
             '-c:a', 'aac',           # Re-encode audio to aac
             '-b:a', '128k',          # Audio bitrate
             '-ar', '44100',          # Audio sample rate
             '-movflags', '+faststart',  # Enable streaming
+            '-threads', '0',         # Use all CPU cores
             '-y',  # Overwrite without prompting
             output_path
         ]
         
         try:
+            logger.debug(f"Running ffmpeg concat command: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -113,17 +115,19 @@ class VideoConcatenator:
             if output_file.stat().st_size == 0:
                 raise RuntimeError("Output file is empty")
             
-            logger.info(f"Successfully concatenated videos to {output_path}")
+            logger.info(f"Successfully concatenated {len(video_paths)} videos to {output_path}")
             
         except subprocess.CalledProcessError as e:
             error_msg = f"Concatenation failed: {e.stderr}"
             logger.error(error_msg)
+            logger.error(f"Concat file contents: {Path(concat_file).read_text() if Path(concat_file).exists() else 'N/A'}")
             raise RuntimeError(error_msg) from e
         finally:
             # Cleanup concat file
             if Path(concat_file).exists():
                 Path(concat_file).unlink()
-                self.temp_files.remove(concat_file)
+                if concat_file in self.temp_files:
+                    self.temp_files.remove(concat_file)
     
     def concatenate_incremental(
         self, 

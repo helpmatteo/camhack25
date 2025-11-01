@@ -72,6 +72,17 @@ class WordClipDatabase:
             missing = required_columns - columns
             raise ValueError(f"Missing required columns in word_clips table: {missing}")
         
+        # Create index on word column for faster lookups (if not exists)
+        try:
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_word_clips_word 
+                ON word_clips(word COLLATE NOCASE)
+            """)
+            self.connection.commit()
+            logger.debug("Ensured index on word_clips.word exists")
+        except Exception as e:
+            logger.warning(f"Could not create index: {e}")
+        
         # Check for video_transcripts table (optional for phrase matching)
         cursor.execute("""
             SELECT name FROM sqlite_master 
@@ -80,6 +91,17 @@ class WordClipDatabase:
         self.has_transcripts = cursor.fetchone() is not None
         
         if self.has_transcripts:
+            # Create index on video_id for faster transcript lookups
+            try:
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_video_transcripts_video_id 
+                    ON video_transcripts(video_id)
+                """)
+                self.connection.commit()
+                logger.debug("Ensured index on video_transcripts.video_id exists")
+            except Exception as e:
+                logger.warning(f"Could not create transcript index: {e}")
+            
             logger.info("Phrase matching enabled (video_transcripts table found)")
         else:
             logger.info("Phrase matching disabled (video_transcripts table not found)")

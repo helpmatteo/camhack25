@@ -112,7 +112,7 @@ class VideoProcessor:
             'ffmpeg',
             '-i', input_path,
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
+            '-preset', 'veryfast',  # Changed from ultrafast for better compression
             '-crf', '23',
             '-pix_fmt', 'yuv420p',  # Ensure consistent pixel format
             '-r', '30',              # Set frame rate to 30fps for consistency
@@ -122,6 +122,7 @@ class VideoProcessor:
             '-ar', '44100',
             '-ac', '2',              # Stereo audio
             '-movflags', '+faststart',  # Enable streaming
+            '-threads', '0',         # Use all available CPU cores
             '-y',  # Overwrite without prompting
             output_path
         ]
