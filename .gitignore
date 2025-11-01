@@ -1,0 +1,6 @@
+.pytest_cache
+docs
+requirements.txt
+**/__pycache__
+output
+temp

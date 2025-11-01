@@ -1,0 +1,213 @@
+"""Video concatenation module for stitching video segments together."""
+
+import logging
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import List
+
+logger = logging.getLogger(__name__)
+
+
+class VideoConcatenator:
+    """Concatenates multiple video segments into a single output file."""
+    
+    def __init__(self, temp_dir: str = "./temp_concat"):
+        """Initialize the video concatenator.
+        
+        Args:
+            temp_dir: Directory for temporary files.
+        """
+        self.temp_dir = Path(temp_dir)
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Track temporary files for cleanup
+        self.temp_files = []
+        
+        logger.info(f"VideoConcatenator initialized with temp dir: {self.temp_dir}")
+    
+    def create_concat_file(self, video_paths: List[str]) -> str:
+        """Create a concat file for ffmpeg concat demuxer.
+        
+        Args:
+            video_paths: List of video file paths to concatenate.
+            
+        Returns:
+            Path to the concat file.
+        """
+        concat_file_path = self.temp_dir / "concat_list.txt"
+        
+        with open(concat_file_path, 'w') as f:
+            for video_path in video_paths:
+                # Use absolute paths and escape single quotes
+                abs_path = Path(video_path).resolve()
+                # Escape single quotes in the path by replacing ' with '\''
+                escaped_path = str(abs_path).replace("'", "'\\''")
+                f.write(f"file '{escaped_path}'\n")
+        
+        self.temp_files.append(str(concat_file_path))
+        logger.debug(f"Created concat file: {concat_file_path}")
+        
+        return str(concat_file_path)
+    
+    def concatenate_videos(
+        self, 
+        video_paths: List[str], 
+        output_path: str
+    ) -> None:
+        """Concatenate videos using ffmpeg concat demuxer.
+        
+        Args:
+            video_paths: List of video file paths to concatenate.
+            output_path: Path to the output file.
+            
+        Raises:
+            ValueError: If any input file doesn't exist.
+            RuntimeError: If concatenation fails.
+        """
+        if not video_paths:
+            raise ValueError("No video paths provided for concatenation")
+        
+        # Verify all input files exist
+        for path in video_paths:
+            if not Path(path).exists():
+                raise ValueError(f"Input file does not exist: {path}")
+        
+        logger.info(f"Concatenating {len(video_paths)} videos to {output_path}")
+        
+        # Create concat file
+        concat_file = self.create_concat_file(video_paths)
+        
+        # Run ffmpeg concat command with re-encoding for compatibility
+        # This ensures all videos are properly stitched even with different codecs
+        cmd = [
+            'ffmpeg',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', concat_file,
+            '-c:v', 'libx264',      # Re-encode video to h264
+            '-preset', 'medium',     # Balanced encoding speed/quality
+            '-crf', '23',            # Good quality
+            '-c:a', 'aac',           # Re-encode audio to aac
+            '-b:a', '128k',          # Audio bitrate
+            '-ar', '44100',          # Audio sample rate
+            '-movflags', '+faststart',  # Enable streaming
+            '-y',  # Overwrite without prompting
+            output_path
+        ]
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=True,
+                text=True
+            )
+            
+            # Verify output was created and has size > 0
+            output_file = Path(output_path)
+            if not output_file.exists():
+                raise RuntimeError("Output file was not created")
+            
+            if output_file.stat().st_size == 0:
+                raise RuntimeError("Output file is empty")
+            
+            logger.info(f"Successfully concatenated videos to {output_path}")
+            
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Concatenation failed: {e.stderr}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+        finally:
+            # Cleanup concat file
+            if Path(concat_file).exists():
+                Path(concat_file).unlink()
+                self.temp_files.remove(concat_file)
+    
+    def concatenate_incremental(
+        self, 
+        video_paths: List[str], 
+        output_path: str
+    ) -> None:
+        """Concatenate videos incrementally to minimize memory/storage.
+        
+        Uses incremental approach: A + B = C, C + D = E, etc.
+        
+        Args:
+            video_paths: List of video file paths to concatenate.
+            output_path: Path to the output file.
+            
+        Raises:
+            ValueError: If less than 2 videos provided.
+            RuntimeError: If concatenation fails.
+        """
+        if len(video_paths) < 2:
+            if len(video_paths) == 1:
+                # Just copy the single file
+                shutil.copy2(video_paths[0], output_path)
+                logger.info(f"Single video copied to {output_path}")
+                return
+            else:
+                raise ValueError("At least one video is required")
+        
+        logger.info(
+            f"Incrementally concatenating {len(video_paths)} videos to {output_path}"
+        )
+        
+        # Start with a copy of the first video
+        current_video = self.temp_dir / "incremental_0.mp4"
+        shutil.copy2(video_paths[0], current_video)
+        self.temp_files.append(str(current_video))
+        
+        # Iteratively concatenate each subsequent video
+        for i, next_video in enumerate(video_paths[1:], start=1):
+            logger.info(f"Processing video {i + 1}/{len(video_paths)}")
+            
+            temp_output = self.temp_dir / f"incremental_{i}.mp4"
+            self.temp_files.append(str(temp_output))
+            
+            # Concatenate current + next → temp_output
+            self.concatenate_videos(
+                [str(current_video), next_video],
+                str(temp_output)
+            )
+            
+            # Delete the previous current video
+            if current_video.exists():
+                current_video.unlink()
+                self.temp_files.remove(str(current_video))
+            
+            # Update current video to the new output
+            current_video = temp_output
+        
+        # Rename final result to output path
+        shutil.move(str(current_video), output_path)
+        if str(current_video) in self.temp_files:
+            self.temp_files.remove(str(current_video))
+        
+        logger.info(f"Incremental concatenation completed: {output_path}")
+    
+    def cleanup(self) -> None:
+        """Remove all temporary files and directories."""
+        logger.info("Cleaning up temporary files")
+        
+        # Remove tracked temporary files
+        for temp_file in self.temp_files[:]:  # Copy list to avoid modification during iteration
+            try:
+                path = Path(temp_file)
+                if path.exists():
+                    path.unlink()
+                    logger.debug(f"Deleted temp file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file {temp_file}: {str(e)}")
+            finally:
+                self.temp_files.remove(temp_file)
+        
+        # Remove temp directory
+        try:
+            if self.temp_dir.exists():
+                shutil.rmtree(self.temp_dir, ignore_errors=True)
+                logger.debug(f"Removed temp directory: {self.temp_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to remove temp directory {self.temp_dir}: {str(e)}")
