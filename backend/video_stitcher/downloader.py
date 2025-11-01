@@ -27,7 +27,6 @@ class VideoDownloaderConfig:
     video_format: str = "bestvideo[height<=720]+bestaudio/best[height<=720]"
     max_retries: int = 3
     timeout: int = 30
-    cookies_from_browser: str = None  # e.g., 'chrome', 'firefox', 'safari', 'edge'
     clip_padding_start: float = 0.15  # Padding before word start (seconds)
     clip_padding_end: float = 0.15  # Padding after word end (seconds)
 
@@ -115,11 +114,6 @@ class VideoSegmentDownloader:
             'no_check_certificate': False,  # Keep SSL verification
             'extract_flat': False,  # We need full extraction for segments
         }
-        
-        # Add cookie authentication if configured
-        if self.config.cookies_from_browser:
-            ydl_opts['cookiesfrombrowser'] = (self.config.cookies_from_browser,)
-            logger.info(f"Using cookies from browser: {self.config.cookies_from_browser}")
         
         try:
             youtube_url = f"https://www.youtube.com/watch?v={clip_info.video_id}"
@@ -209,19 +203,24 @@ class VideoSegmentDownloader:
         except yt_dlp.utils.DownloadError as e:
             # Extract more specific error information from yt-dlp
             error_msg = str(e)
+            video_id = getattr(clip_info, 'video_id', 'unknown')
+            word = getattr(clip_info, 'word', 'unknown')
+            
             # Check for common error patterns
             if "Private video" in error_msg or "Video unavailable" in error_msg:
-                error_msg = f"Video unavailable or private: {clip_info.video_id}"
+                error_msg = f"Video unavailable or private: {video_id}"
             elif "HTTP Error" in error_msg or "403" in error_msg:
                 error_msg = f"HTTP error (may be rate limited): {error_msg[:200]}"
             elif "Unable to download" in error_msg:
                 error_msg = f"Unable to download video: {error_msg[:200]}"
             
-            logger.error(f"yt-dlp error for '{clip_info.word}' (video {clip_info.video_id}): {error_msg}")
-            raise DownloadError(f"Failed to download segment for '{clip_info.word}': {error_msg}") from e
+            logger.error(f"yt-dlp error for '{word}' (video {video_id}): {error_msg}")
+            raise DownloadError(f"Failed to download segment for '{word}': {error_msg}") from e
         except Exception as e:
-            error_msg = f"Failed to download segment for '{clip_info.word}': {str(e)}"
-            logger.error(f"Unexpected error for '{clip_info.word}' (video {clip_info.video_id}): {error_msg}")
+            video_id = getattr(clip_info, 'video_id', 'unknown')
+            word = getattr(clip_info, 'word', 'unknown')
+            error_msg = f"Failed to download segment for '{word}': {str(e)}"
+            logger.error(f"Unexpected error for '{word}' (video {video_id}): {error_msg}")
             raise DownloadError(error_msg) from e
     
     def _validate_segment(self, file_path: str) -> bool:

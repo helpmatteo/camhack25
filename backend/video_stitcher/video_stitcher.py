@@ -29,7 +29,6 @@ class StitchingConfig:
     verify_ffmpeg_on_init: bool = True  # Set to False to skip ffmpeg verification
     max_phrase_length: int = 10  # Maximum number of consecutive words to match as a phrase (1-50)
     max_workers: int = 8  # Number of parallel workers (1=sequential, 2-8=parallel for performance)
-    cookies_from_browser: str = None  # Browser to extract cookies from (e.g., 'chrome', 'firefox', 'safari')
     channel_id: Optional[str] = None  # Optional channel ID to filter clips to
     
     # Clip extraction options
@@ -70,7 +69,6 @@ class VideoStitcher:
         downloader_config = VideoDownloaderConfig(
             output_directory=str(self.temp_dir / "downloads"),
             video_format=config.video_quality,
-            cookies_from_browser=config.cookies_from_browser,
             clip_padding_start=config.clip_padding_start,
             clip_padding_end=config.clip_padding_end
         )
@@ -272,7 +270,7 @@ class VideoStitcher:
             logger.debug(f"  {i}: '{clip.word}' from {clip.video_id} -> {Path(path).name}")
         
         logger.info(f"Successfully downloaded {len(successful_paths)}/{len(clips)} segments")
-        return successful_paths
+        return downloaded_paths  # Return full list with None values preserved for indexing
     
     def process_segments(
         self,
@@ -299,7 +297,7 @@ class VideoStitcher:
         processed_paths = [None] * len(segment_paths)  # Preserve order
         completed = 0
         
-        def process_segment(index, segment_path):
+        def process_segment(index, segment_path, clip_info=None):
             """Process a single segment and return its index and path."""
             # Generate output path
             original_name = Path(segment_path).stem
@@ -309,7 +307,7 @@ class VideoStitcher:
             # Check if already processed (cache)
             if output_path.exists():
                 logger.debug(f"Using cached processed segment: {output_path.name}")
-                return (index, str(output_path), None, segment_name)
+                return (index, str(output_path), None)
             
             try:
                 current_path = segment_path
@@ -323,7 +321,7 @@ class VideoStitcher:
                     except RuntimeError as e:
                         if "corrupted" in str(e).lower():
                             logger.warning(f"Skipping corrupted segment: {segment_path}")
-                            return (index, None, e, segment_name)
+                            return (index, None, e)
                         raise
                 
                 # Step 2: Re-encode for consistency
@@ -336,7 +334,7 @@ class VideoStitcher:
                     current_path = str(temp_reencoded)
                 except Exception as e:
                     logger.error(f"Failed to re-encode segment {segment_path}: {e}")
-                    return (index, None, e, segment_name)
+                    return (index, None, e)
                 
                 # Step 3: Resize to aspect ratio if needed
                 if self.config.aspect_ratio != "16:9":
@@ -396,7 +394,7 @@ class VideoStitcher:
             with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
                 # Submit all processing tasks
                 future_to_index = {
-                    executor.submit(process_segment, i, path): i 
+                    executor.submit(process_segment, i, path, clips[i] if i < len(clips) else None): i 
                     for i, path in enumerate(segment_paths)
                 }
                 
@@ -416,7 +414,8 @@ class VideoStitcher:
                 if progress_callback:
                     progress_callback(completed, len(segment_paths))
                 
-                index, processed_path, error = process_segment(i, path)
+                clip_info_item = clips[i] if i < len(clips) else None
+                index, processed_path, error = process_segment(i, path, clip_info_item)
                 if processed_path is not None:
                     processed_paths[index] = processed_path
         
@@ -522,10 +521,18 @@ class VideoStitcher:
             if not any(seg is not None for seg in segments):
                 raise RuntimeError("Failed to download or create any video segments")
             
+            # Filter segments and clips to only include non-None segments
+            valid_segments = []
+            valid_clips = []
+            for i, seg in enumerate(segments):
+                if seg is not None:
+                    valid_segments.append(seg)
+                    valid_clips.append(clips[i] if i < len(clips) else None)
+            
             # Step 4: Process segments
             phase_start = time.time()
             logger.info("Step 4/5: Processing video segments")
-            processed = self.process_segments(segments, progress_callback)
+            processed = self.process_segments(valid_segments, valid_clips, progress_callback)
             phase_times['process'] = time.time() - phase_start
             logger.info(f"✓ Processing completed in {phase_times['process']:.2f}s")
             
@@ -575,10 +582,13 @@ class VideoStitcher:
                 all_videos.append(str(outro_path))
             
             # Concatenate everything
+            phase_start = time.time()
             if self.config.incremental_stitching:
                 self.concatenator.concatenate_incremental(all_videos, str(output_path))
             else:
                 self.concatenator.concatenate_videos(all_videos, str(output_path))
+            phase_times['concatenate'] = time.time() - phase_start
+            logger.info(f"✓ Concatenation completed in {phase_times['concatenate']:.2f}s")
             
             # Calculate total time and display summary
             total_time = time.time() - start_time
