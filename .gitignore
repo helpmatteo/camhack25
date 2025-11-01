@@ -1,6 +1,6 @@
-.pytest_cache
-docs
-requirements.txt
+**/.pytest_cache
+**/docs
+backend/requirements.txt
 **/__pycache__
-output
-temp
+backend/output
+backend/temp
