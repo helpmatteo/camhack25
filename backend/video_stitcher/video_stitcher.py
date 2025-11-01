@@ -3,7 +3,7 @@
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Callable, Tuple
@@ -29,6 +29,19 @@ class StitchingConfig:
     verify_ffmpeg_on_init: bool = True  # Set to False to skip ffmpeg verification
     max_phrase_length: int = 10  # Maximum number of consecutive words to match as a phrase (1-50)
     max_workers: int = 8  # Number of parallel workers (1=sequential, 2-8=parallel for performance)
+    cookies_from_browser: str = None  # Browser to extract cookies from (e.g., 'chrome', 'firefox', 'safari')
+    channel_id: Optional[str] = None  # Optional channel ID to filter clips to
+    
+    # Clip extraction options
+    clip_padding_start: float = 0.15  # Padding before word start (seconds) for cleaner cuts
+    clip_padding_end: float = 0.15  # Padding after word end (seconds) for cleaner cuts
+    
+    # Visual enhancement options
+    add_subtitles: bool = False  # Add subtitle overlays to clips
+    aspect_ratio: str = "16:9"  # Target aspect ratio ('16:9', '9:16', '1:1')
+    watermark_text: Optional[str] = None  # Watermark text to add
+    intro_text: Optional[str] = None  # Intro card text
+    outro_text: Optional[str] = None  # Outro card text
 
 
 class VideoStitcher:
@@ -56,7 +69,10 @@ class VideoStitcher:
         # Initialize downloader
         downloader_config = VideoDownloaderConfig(
             output_directory=str(self.temp_dir / "downloads"),
-            video_format=config.video_quality
+            video_format=config.video_quality,
+            cookies_from_browser=config.cookies_from_browser,
+            clip_padding_start=config.clip_padding_start,
+            clip_padding_end=config.clip_padding_end
         )
         self.downloader = VideoSegmentDownloader(downloader_config)
         
@@ -94,14 +110,18 @@ class VideoStitcher:
         This method attempts to find longer consecutive phrases from the same video
         before falling back to individual word lookups. It also tries to avoid
         repeating videos unless necessary, creating more diverse output.
+        For words without clips, placeholder ClipInfo objects are inserted.
         
         Args:
             words: List of words to look up.
             
         Returns:
-            Tuple of (found_clips, missing_words).
+            Tuple of (found_clips_with_placeholders, missing_words).
+            The clips list includes placeholder ClipInfo objects for missing words.
         """
         logger.info(f"Looking up clips for {len(words)} words")
+        if self.config.channel_id:
+            logger.info(f"Filtering clips to channel: {self.config.channel_id}")
         
         found_clips = []
         missing_words = []
@@ -119,7 +139,13 @@ class VideoStitcher:
                 max_phrase_len = min(self.config.max_phrase_length, len(words) - i)
                 for phrase_len in range(max_phrase_len, 1, -1):  # Start from longest
                     phrase = ' '.join(words[i:i + phrase_len])
-                    clip_info = self.database.find_phrase_in_transcripts(phrase, exclude_video_ids=used_video_ids)
+                    clip_info = self.database.find_phrase_in_transcripts(
+                        phrase, 
+                        exclude_video_ids=used_video_ids,
+                        channel_id=self.config.channel_id,
+                        padding_start=self.config.clip_padding_start,
+                        padding_end=self.config.clip_padding_end
+                    )
                     
                     if clip_info is not None:
                         best_clip = clip_info
@@ -135,26 +161,39 @@ class VideoStitcher:
             else:
                 # Fall back to single word lookup
                 word = words[i]
-                clip_info = self.database.get_clip_info(word, exclude_video_ids=used_video_ids)
+                clip_info = self.database.get_clip_info(
+                    word, 
+                    exclude_video_ids=used_video_ids,
+                    channel_id=self.config.channel_id
+                )
                 
                 if clip_info is None:
                     missing_words.append(word)
-                    logger.warning(f"No clip found for word: {word}")
+                    logger.warning(f"No clip found for word: {word}, will use placeholder")
+                    # Create placeholder ClipInfo
+                    placeholder = ClipInfo(
+                        word=word,
+                        video_id="PLACEHOLDER",  # Special marker for placeholders
+                        start_time=0.0,
+                        duration=1.0  # Default duration for placeholder
+                    )
+                    found_clips.append(placeholder)
                 else:
                     found_clips.append(clip_info)
                     used_video_ids.append(clip_info.video_id)
                 
                 i += 1
         
-        # Log video diversity stats
-        unique_videos = len(set(used_video_ids))
-        if unique_videos < len(used_video_ids):
-            logger.info(f"Video diversity: {unique_videos} unique videos used for {len(found_clips)} clips")
+        # Log video diversity stats (excluding placeholders)
+        real_clips = [c for c in found_clips if c.video_id != "PLACEHOLDER"]
+        unique_videos = len(set(c.video_id for c in real_clips))
+        if unique_videos < len(real_clips):
+            logger.info(f"Video diversity: {unique_videos} unique videos used for {len(real_clips)} clips")
         else:
             logger.info(f"Video diversity: All clips from different videos ({unique_videos} unique)")
         
         logger.info(
-            f"Found {len(found_clips)} clips, {len(missing_words)} words missing"
+            f"Found {len(real_clips)} clips, {len(missing_words)} words using placeholders"
         )
         
         return found_clips, missing_words
@@ -165,6 +204,7 @@ class VideoStitcher:
         progress_callback: Optional[Callable] = None
     ) -> List[str]:
         """Download all required video segments in parallel.
+        Skips placeholder clips (they will be generated separately).
         
         Args:
             clips: List of clip information to download.
@@ -237,12 +277,14 @@ class VideoStitcher:
     def process_segments(
         self,
         segment_paths: List[str],
+        clips: List[ClipInfo],
         progress_callback: Optional[Callable] = None
     ) -> List[str]:
         """Process segments (normalize, re-encode) for concatenation in parallel.
         
         Args:
             segment_paths: List of video segment paths.
+            clips: List of clip info objects corresponding to segment paths.
             progress_callback: Optional callback function(current, total).
             
         Returns:
@@ -262,25 +304,85 @@ class VideoStitcher:
             # Generate output path
             original_name = Path(segment_path).stem
             output_path = processed_dir / f"{original_name}_processed.mp4"
+            segment_name = clip_info.word if clip_info else Path(segment_path).name
+            
+            # Check if already processed (cache)
+            if output_path.exists():
+                logger.debug(f"Using cached processed segment: {output_path.name}")
+                return (index, str(output_path), None, segment_name)
             
             try:
+                current_path = segment_path
+                
+                # Step 1: Normalize audio if configured
                 if self.config.normalize_audio:
-                    # Normalize audio first
                     temp_normalized = processed_dir / f"{original_name}_normalized.mp4"
-                    self.processor.normalize_audio(segment_path, str(temp_normalized))
-                    
-                    # Then re-encode for consistency
-                    self.processor.reencode_for_concat(
-                        str(temp_normalized), 
-                        str(output_path)
+                    try:
+                        self.processor.normalize_audio(current_path, str(temp_normalized))
+                        current_path = str(temp_normalized)
+                    except RuntimeError as e:
+                        if "corrupted" in str(e).lower():
+                            logger.warning(f"Skipping corrupted segment: {segment_path}")
+                            return (index, None, e, segment_name)
+                        raise
+                
+                # Step 2: Re-encode for consistency
+                temp_reencoded = processed_dir / f"{original_name}_reencoded.mp4"
+                try:
+                    self.processor.reencode_for_concat(current_path, str(temp_reencoded))
+                    # Validate the re-encoded file
+                    if not temp_reencoded.exists() or temp_reencoded.stat().st_size < 1000:
+                        raise RuntimeError(f"Re-encoded file is invalid: {temp_reencoded}")
+                    current_path = str(temp_reencoded)
+                except Exception as e:
+                    logger.error(f"Failed to re-encode segment {segment_path}: {e}")
+                    return (index, None, e, segment_name)
+                
+                # Step 3: Resize to aspect ratio if needed
+                if self.config.aspect_ratio != "16:9":
+                    temp_resized = processed_dir / f"{original_name}_resized.mp4"
+                    self.processor.resize_to_aspect_ratio(
+                        current_path,
+                        str(temp_resized),
+                        self.config.aspect_ratio
                     )
-                    
-                    # Clean up temp normalized file
-                    if temp_normalized.exists():
-                        temp_normalized.unlink()
-                else:
-                    # Just re-encode for consistency
-                    self.processor.reencode_for_concat(segment_path, str(output_path))
+                    current_path = str(temp_resized)
+                
+                # Step 4: Add subtitles if configured
+                if self.config.add_subtitles and clip_info:
+                    temp_subtitled = processed_dir / f"{original_name}_subtitled.mp4"
+                    self.processor.add_subtitle_overlay(
+                        current_path,
+                        str(temp_subtitled),
+                        clip_info.word
+                    )
+                    current_path = str(temp_subtitled)
+                
+                # Step 5: Add watermark if configured
+                if self.config.watermark_text:
+                    temp_watermarked = processed_dir / f"{original_name}_watermarked.mp4"
+                    self.processor.add_watermark(
+                        current_path,
+                        str(temp_watermarked),
+                        self.config.watermark_text
+                    )
+                    current_path = str(temp_watermarked)
+                
+                # Move final result to output path
+                if current_path != str(output_path):
+                    import shutil
+                    shutil.move(current_path, str(output_path))
+                
+                # Clean up temporary files
+                for temp_file in [
+                    processed_dir / f"{original_name}_normalized.mp4",
+                    processed_dir / f"{original_name}_reencoded.mp4",
+                    processed_dir / f"{original_name}_resized.mp4",
+                    processed_dir / f"{original_name}_subtitled.mp4",
+                    processed_dir / f"{original_name}_watermarked.mp4"
+                ]:
+                    if temp_file.exists() and temp_file != output_path:
+                        temp_file.unlink()
                 
                 logger.debug(f"Processed segment: {output_path}")
                 return index, str(output_path), None
@@ -381,12 +483,12 @@ class VideoStitcher:
             
             if not clips:
                 raise ValueError(
-                    f"No clips found for any words. Missing: {', '.join(missing_words)}"
+                    f"No clips found for any words. Missing: {', '.join(missing_words) if missing_words else 'all words'}"
                 )
             
             if missing_words:
-                logger.warning(
-                    f"Continuing without {len(missing_words)} words: {', '.join(missing_words)}"
+                logger.info(
+                    f"Using placeholders for {len(missing_words)} words: {', '.join(missing_words)}"
                 )
             
             # Step 3: Download segments
@@ -396,8 +498,29 @@ class VideoStitcher:
             phase_times['download'] = time.time() - phase_start
             logger.info(f"✓ Download completed in {phase_times['download']:.2f}s")
             
-            if not segments:
-                raise RuntimeError("Failed to download any video segments")
+            # Create placeholder videos for missing words
+            placeholder_dir = self.temp_dir / "placeholders"
+            placeholder_dir.mkdir(parents=True, exist_ok=True)
+            width, height = self._get_target_dimensions()
+            
+            for i, clip in enumerate(clips):
+                if clip.video_id == "PLACEHOLDER":
+                    placeholder_path = placeholder_dir / f"placeholder_{i}_{clip.word}.mp4"
+                    logger.info(f"Creating placeholder for word: {clip.word}")
+                    self.processor.create_title_card(
+                        str(placeholder_path),
+                        clip.word,
+                        duration=clip.duration,
+                        width=width,
+                        height=height,
+                        bg_color="gray",
+                        text_color="white"
+                    )
+                    segments[i] = str(placeholder_path)
+            
+            # Verify we have at least some segments (either downloaded or placeholders)
+            if not any(seg is not None for seg in segments):
+                raise RuntimeError("Failed to download or create any video segments")
             
             # Step 4: Process segments
             phase_start = time.time()
@@ -409,17 +532,53 @@ class VideoStitcher:
             if not processed:
                 raise RuntimeError("Failed to process any video segments")
             
-            # Step 5: Concatenate into final video (use batch mode for speed)
-            phase_start = time.time()
-            logger.info("Step 5/5: Concatenating videos")
+            # Verify we have processed segments for all clips (placeholders included)
+            expected_count = len([c for c in clips])
+            if len(processed) != expected_count:
+                logger.warning(
+                    f"Processed segment count ({len(processed)}) doesn't match clip count ({expected_count}). "
+                    f"Missing {expected_count - len(processed)} segments."
+                )
+            
+            # Step 5: Add intro/outro cards and concatenate
+            logger.info("Step 5/5: Adding intro/outro and concatenating videos")
+            all_videos = []
+            
+            # Add intro card if configured
+            if self.config.intro_text:
+                intro_path = self.temp_dir / "intro_card.mp4"
+                # Get dimensions from first video segment
+                width, height = self._get_target_dimensions()
+                self.processor.create_title_card(
+                    str(intro_path),
+                    self.config.intro_text,
+                    duration=2.0,
+                    width=width,
+                    height=height
+                )
+                all_videos.append(str(intro_path))
+            
+            # Add processed segments in order (placeholders are already included)
+            all_videos.extend(processed)
+            
+            # Add outro card if configured
+            if self.config.outro_text:
+                outro_path = self.temp_dir / "outro_card.mp4"
+                width, height = self._get_target_dimensions()
+                self.processor.create_title_card(
+                    str(outro_path),
+                    self.config.outro_text,
+                    duration=2.0,
+                    width=width,
+                    height=height
+                )
+                all_videos.append(str(outro_path))
+            
+            # Concatenate everything
             if self.config.incremental_stitching:
-                # Slower incremental method (kept for compatibility)
-                self.concatenator.concatenate_incremental(processed, str(output_path))
+                self.concatenator.concatenate_incremental(all_videos, str(output_path))
             else:
-                # Fast batch concatenation (default)
-                self.concatenator.concatenate_videos(processed, str(output_path))
-            phase_times['concatenate'] = time.time() - phase_start
-            logger.info(f"✓ Concatenation completed in {phase_times['concatenate']:.2f}s")
+                self.concatenator.concatenate_videos(all_videos, str(output_path))
             
             # Calculate total time and display summary
             total_time = time.time() - start_time
@@ -460,6 +619,19 @@ class VideoStitcher:
                     
                 except Exception as e:
                     logger.warning(f"Cleanup failed: {e}")
+    
+    def _get_target_dimensions(self) -> Tuple[int, int]:
+        """Get target video dimensions based on aspect ratio configuration.
+        
+        Returns:
+            Tuple of (width, height) in pixels.
+        """
+        resolutions = {
+            "16:9": (1920, 1080),
+            "9:16": (1080, 1920),
+            "1:1": (1080, 1080)
+        }
+        return resolutions.get(self.config.aspect_ratio, (1920, 1080))
     
     def close(self) -> None:
         """Close the video stitcher and release resources."""

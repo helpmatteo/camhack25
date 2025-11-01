@@ -116,6 +116,22 @@ Examples:
     )
     
     parser.add_argument(
+        '--padding-start',
+        type=float,
+        default=0.15,
+        metavar='SECONDS',
+        help='Padding before word start for cleaner cuts (default: 0.15 seconds)'
+    )
+    
+    parser.add_argument(
+        '--padding-end',
+        type=float,
+        default=0.15,
+        metavar='SECONDS',
+        help='Padding after word end for cleaner cuts (default: 0.15 seconds)'
+    )
+    
+    parser.add_argument(
         '--no-normalize',
         action='store_true',
         help='Disable audio normalization'
@@ -125,6 +141,49 @@ Examples:
         '--no-cleanup',
         action='store_true',
         help='Keep temporary files (useful for debugging)'
+    )
+    
+    # Parallel processing options
+    parser.add_argument(
+        '--max-download-workers',
+        type=int,
+        default=3,
+        choices=range(1, 11),
+        metavar='[1-10]',
+        help='Max concurrent downloads (default: 3, range: 1-10). Lower values reduce YouTube rate limit risk.'
+    )
+    
+    parser.add_argument(
+        '--max-processing-workers',
+        type=int,
+        default=4,
+        choices=range(1, 11),
+        metavar='[1-10]',
+        help='Max concurrent video processing tasks (default: 4, range: 1-10)'
+    )
+    
+    parser.add_argument(
+        '--download-timeout',
+        type=int,
+        default=300,
+        metavar='SECONDS',
+        help='Overall timeout for all downloads in seconds (default: 300)'
+    )
+    
+    parser.add_argument(
+        '--processing-timeout',
+        type=int,
+        default=600,
+        metavar='SECONDS',
+        help='Overall timeout for all video processing in seconds (default: 600)'
+    )
+    
+    parser.add_argument(
+        '--max-failure-rate',
+        type=float,
+        default=0.5,
+        metavar='[0.0-1.0]',
+        help='Maximum acceptable failure rate (default: 0.5 = 50%%)'
     )
     
     parser.add_argument(
@@ -155,7 +214,14 @@ Examples:
             normalize_audio=not args.no_normalize,
             incremental_stitching=True,
             cleanup_temp_files=not args.no_cleanup,
-            max_phrase_length=args.max_phrase_length
+            max_phrase_length=args.max_phrase_length,
+            clip_padding_start=args.padding_start,
+            clip_padding_end=args.padding_end,
+            max_download_workers=args.max_download_workers,
+            max_processing_workers=args.max_processing_workers,
+            download_timeout=args.download_timeout,
+            processing_timeout=args.processing_timeout,
+            max_failure_rate=args.max_failure_rate
         )
         
         # Print summary
@@ -166,7 +232,11 @@ Examples:
         print(f"Database: {args.database}")
         print(f"Output: {args.output_dir}/{args.output}")
         print(f"Max phrase length: {config.max_phrase_length} words")
+        print(f"Clip padding: {config.clip_padding_start}s before, {config.clip_padding_end}s after")
         print(f"Audio normalization: {'enabled' if config.normalize_audio else 'disabled'}")
+        print(f"Parallel downloads: {config.max_download_workers} workers (timeout: {config.download_timeout}s)")
+        print(f"Parallel processing: {config.max_processing_workers} workers (timeout: {config.processing_timeout}s)")
+        print(f"Max failure rate: {config.max_failure_rate:.1%}")
         print(f"Cleanup temp files: {'yes' if config.cleanup_temp_files else 'no'}")
         print("="*60 + "\n")
         

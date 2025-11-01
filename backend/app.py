@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
-from db import search_phrase
+from db import search_phrase, get_channels
 from video_stitcher import VideoStitcher, StitchingConfig
 
 app = FastAPI(title="YouGlish-lite API", version="0.1")
@@ -35,17 +35,32 @@ class SearchResponseItem(BaseModel):
     text: str
     title: Optional[str] = None
     channel_title: Optional[str] = None
+    channel_id: Optional[str] = None
+
+
+class ChannelInfo(BaseModel):
+    channel_id: str
+    channel_title: str
+    video_count: int
+
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
+
+@app.get("/channels", response_model=list[ChannelInfo])
+def channels():
+    """Get list of all available channels with video counts."""
+    return get_channels()
+
+
 @app.get("/search", response_model=list[SearchResponseItem])
-def search(q: str, lang: Optional[str] = None, limit: int = 20):
+def search(q: str, lang: Optional[str] = None, limit: int = 20, channel_id: Optional[str] = None):
     q = q.strip()
     if not q:
         raise HTTPException(400, detail="q is required")
-    rows = search_phrase(q, lang, limit)
+    rows = search_phrase(q, lang, limit, channel_id)
     return rows
 
 
@@ -53,6 +68,25 @@ class GenerateVideoRequest(BaseModel):
     text: str
     lang: Optional[str] = "en"
     max_phrase_length: Optional[int] = 10  # Default to 10, range 1-50
+    channel_id: Optional[str] = None  # Optional channel ID to filter clips
+    
+    # Clip extraction options
+    clip_padding_start: Optional[float] = 0.15  # Padding before word start (seconds)
+    clip_padding_end: Optional[float] = 0.15  # Padding after word end (seconds)
+    
+    # Visual enhancement options
+    add_subtitles: Optional[bool] = False  # Add subtitle overlays
+    aspect_ratio: Optional[str] = "16:9"  # Target aspect ratio ('16:9', '9:16', '1:1')
+    watermark_text: Optional[str] = None  # Watermark text
+    intro_text: Optional[str] = None  # Intro card text
+    outro_text: Optional[str] = None  # Outro card text
+    
+    # Parallel processing options
+    max_download_workers: Optional[int] = 3  # Max concurrent downloads (1-10)
+    max_processing_workers: Optional[int] = 4  # Max concurrent processing tasks (1-10)
+    download_timeout: Optional[int] = 300  # Download timeout in seconds
+    processing_timeout: Optional[int] = 600  # Processing timeout in seconds
+    max_failure_rate: Optional[float] = 0.5  # Maximum acceptable failure rate (0.0-1.0)
 
 
 class GenerateVideoResponse(BaseModel):
@@ -90,6 +124,9 @@ def generate_video(request: GenerateVideoRequest):
         
         # Use the existing video_stitcher with word_clips database
         # Note: we're using the youglish.db which should have word_clips table
+        # Get browser for cookie extraction from environment variable
+        cookies_browser = os.getenv("COOKIES_FROM_BROWSER", "chrome")
+        
         config = StitchingConfig(
             database_path="./data/youglish.db",
             output_directory="./output",
@@ -99,6 +136,20 @@ def generate_video(request: GenerateVideoRequest):
             incremental_stitching=False,  # Use fast batch concatenation
             cleanup_temp_files=True,
             max_phrase_length=max_phrase_length
+            incremental_stitching=True,
+            cleanup_temp_files=False,  # Keep cache for faster subsequent generations
+            max_phrase_length=max_phrase_length,
+            cookies_from_browser=cookies_browser,
+            channel_id=request.channel_id,
+            # Clip extraction options
+            clip_padding_start=request.clip_padding_start or 0.15,
+            clip_padding_end=request.clip_padding_end or 0.15,
+            # Visual enhancement options
+            add_subtitles=request.add_subtitles or False,
+            aspect_ratio=request.aspect_ratio or "16:9",
+            watermark_text=request.watermark_text,
+            intro_text=request.intro_text,
+            outro_text=request.outro_text,
         )
         
         # Generate unique filename

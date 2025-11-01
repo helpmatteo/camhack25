@@ -2,6 +2,7 @@
 
 import sqlite3
 import logging
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
@@ -90,6 +91,13 @@ class WordClipDatabase:
         """)
         self.has_transcripts = cursor.fetchone() is not None
         
+        # Check for phrase_index table (optional for fast phrase lookups)
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='phrase_index'
+        """)
+        self.has_phrase_index = cursor.fetchone() is not None
+        
         if self.has_transcripts:
             # Create index on video_id for faster transcript lookups
             try:
@@ -106,30 +114,57 @@ class WordClipDatabase:
         else:
             logger.info("Phrase matching disabled (video_transcripts table not found)")
         
+        if self.has_phrase_index:
+            logger.info("Fast phrase lookups enabled (phrase_index table found)")
+        else:
+            logger.info("Fast phrase lookups disabled (phrase_index table not found)")
+        
         logger.debug("Database schema verified")
     
-    def get_clip_info(self, word: str, exclude_video_ids: Optional[List[str]] = None) -> Optional[ClipInfo]:
-        """Look up clip information for a single word, optionally excluding certain videos.
+    def get_clip_info(self, word: str, exclude_video_ids: Optional[List[str]] = None, channel_id: Optional[str] = None) -> Optional[ClipInfo]:
+        """Look up clip information for a single word, optionally excluding certain videos and filtering by channel.
         
         Args:
             word: The word to search for (case-insensitive).
             exclude_video_ids: Optional list of video IDs to exclude from results.
+            channel_id: Optional channel ID to filter results to.
             
         Returns:
             ClipInfo object if word is found, None otherwise.
         """
         cursor = self.connection.cursor()
         
-        if exclude_video_ids:
-            # Try to find a clip from a video not in the exclusion list
-            placeholders = ','.join('?' * len(exclude_video_ids))
-            cursor.execute(f"""
+        # Build base query with channel filter
+        base_params = [word]
+        
+        if channel_id:
+            # Join with videos table to filter by channel
+            base_conditions = ["LOWER(wc.word) = LOWER(?)"]
+            base_query = """
+                SELECT wc.word, wc.video_id, wc.start_time, wc.duration 
+                FROM word_clips wc
+                JOIN videos v ON wc.video_id = v.video_id
+                WHERE {}
+                AND v.channel_id = ?
+            """
+            base_params.append(channel_id)
+            video_id_column = "wc.video_id"  # Use table alias when joining
+        else:
+            base_conditions = ["LOWER(word) = LOWER(?)"]
+            base_query = """
                 SELECT word, video_id, start_time, duration 
                 FROM word_clips 
-                WHERE LOWER(word) = LOWER(?)
-                AND video_id NOT IN ({placeholders})
-                LIMIT 1
-            """, (word, *exclude_video_ids))
+                WHERE {}
+            """
+            video_id_column = "video_id"  # No alias needed without join
+        
+        if exclude_video_ids:
+            # Try to find a clip from a video not in the exclusion list
+            conditions = base_conditions + [f"{video_id_column} NOT IN ({','.join('?' * len(exclude_video_ids))})"]
+            query = base_query.format(" AND ".join(conditions)) + " LIMIT 1"
+            params = base_params + list(exclude_video_ids)
+            
+            cursor.execute(query, params)
             
             row = cursor.fetchone()
             if row is not None:
@@ -145,12 +180,8 @@ class WordClipDatabase:
             logger.debug(f"No alternative video found for '{word}', using any available")
         
         # Standard query without exclusions
-        cursor.execute("""
-            SELECT word, video_id, start_time, duration 
-            FROM word_clips 
-            WHERE LOWER(word) = LOWER(?)
-            LIMIT 1
-        """, (word,))
+        query = base_query.format(" AND ".join(base_conditions)) + " LIMIT 1"
+        cursor.execute(query, base_params)
         
         row = cursor.fetchone()
         if row is None:
@@ -234,16 +265,110 @@ class WordClipDatabase:
         import json
         return json.loads(row['transcript_data'])
     
-    def find_phrase_in_transcripts(self, phrase: str, exclude_video_ids: Optional[List[str]] = None) -> Optional[ClipInfo]:
-        """Find a phrase (consecutive words) in the video transcripts, optionally excluding certain videos.
+    def _phrase_hash(self, phrase: str) -> str:
+        """Generate MD5 hash of normalized phrase for index lookup."""
+        normalized = phrase.lower().strip()
+        return hashlib.md5(normalized.encode('utf-8')).hexdigest()
+    
+    def _lookup_phrase_index(
+        self,
+        phrase: str,
+        exclude_video_ids: Optional[List[str]] = None,
+        channel_id: Optional[str] = None,
+        padding_start: float = 0.15,
+        padding_end: float = 0.15
+    ) -> Optional[ClipInfo]:
+        """Fast lookup in pre-computed phrase index.
         
         Args:
-            phrase: Space-separated words to find as a consecutive sequence.
-            exclude_video_ids: Optional list of video IDs to exclude from results.
+            phrase: Space-separated words to find.
+            exclude_video_ids: Optional list of video IDs to exclude.
+            channel_id: Optional channel ID to filter results to.
+            padding_start: Padding before first word start (seconds).
+            padding_end: Padding after last word end (seconds).
             
         Returns:
-            ClipInfo with calculated start_time and duration spanning the phrase,
-            or None if phrase is not found in any video.
+            ClipInfo if phrase found in index, None otherwise.
+        """
+        if not self.has_phrase_index:
+            return None
+        
+        cursor = self.connection.cursor()
+        p_hash = self._phrase_hash(phrase)
+        
+        # Build query with optional filters
+        if channel_id:
+            # Join with videos table for channel filter
+            base_query = """
+                SELECT pi.video_id, pi.start_time, pi.end_time, pi.phrase_text
+                FROM phrase_index pi
+                JOIN videos v ON pi.video_id = v.video_id
+                WHERE pi.phrase_hash = ?
+                AND v.channel_id = ?
+            """
+            params = [p_hash, channel_id]
+        else:
+            base_query = """
+                SELECT video_id, start_time, end_time, phrase_text
+                FROM phrase_index
+                WHERE phrase_hash = ?
+            """
+            params = [p_hash]
+        
+        # Try to find phrase NOT in excluded videos first
+        if exclude_video_ids:
+            exclusion_filter = f" AND video_id NOT IN ({','.join('?' * len(exclude_video_ids))})"
+            query = base_query + exclusion_filter + " LIMIT 1"
+            cursor.execute(query, params + list(exclude_video_ids))
+            
+            row = cursor.fetchone()
+            if row:
+                # Found in non-excluded video - apply padding
+                start_time = max(0, row['start_time'] - padding_start)
+                end_time = row['end_time'] + padding_end
+                duration = end_time - start_time
+                
+                logger.info(f"Found phrase '{phrase}' in phrase_index (non-repeated video {row['video_id']})")
+                return ClipInfo(
+                    word=phrase,
+                    video_id=row['video_id'],
+                    start_time=start_time,
+                    duration=duration
+                )
+        
+        # No exclusion or no non-excluded match found, try any video
+        query = base_query + " LIMIT 1"
+        cursor.execute(query, params)
+        
+        row = cursor.fetchone()
+        if row:
+            # Apply padding
+            start_time = max(0, row['start_time'] - padding_start)
+            end_time = row['end_time'] + padding_end
+            duration = end_time - start_time
+            
+            logger.info(f"Found phrase '{phrase}' in phrase_index (video {row['video_id']})")
+            return ClipInfo(
+                word=phrase,
+                video_id=row['video_id'],
+                start_time=start_time,
+                duration=duration
+            )
+        
+        return None
+    
+    def _scan_transcripts_for_phrase(
+        self,
+        phrase: str,
+        exclude_video_ids: Optional[List[str]] = None,
+        channel_id: Optional[str] = None,
+        padding_start: float = 0.15,
+        padding_end: float = 0.15
+    ) -> Optional[ClipInfo]:
+        """Fallback method: scan transcripts directly for phrase (slower).
+        
+        This is the original implementation, kept as a fallback for when
+        the phrase index doesn't contain the phrase (rare phrases).
         """
         if not self.has_transcripts:
             return None
@@ -254,7 +379,17 @@ class WordClipDatabase:
             return None
         
         cursor = self.connection.cursor()
-        cursor.execute("SELECT video_id, transcript_data FROM video_transcripts")
+        
+        # Add channel filter if specified
+        if channel_id:
+            cursor.execute("""
+                SELECT vt.video_id, vt.transcript_data 
+                FROM video_transcripts vt
+                JOIN videos v ON vt.video_id = v.video_id
+                WHERE v.channel_id = ?
+            """, (channel_id,))
+        else:
+            cursor.execute("SELECT video_id, transcript_data FROM video_transcripts")
         
         # First pass: try to find in videos NOT in exclusion list
         found_excluded = None
@@ -272,9 +407,14 @@ class WordClipDatabase:
                         break
                 
                 if matches:
-                    # Calculate start_time and duration
-                    start_time = transcript[i][1]  # Start of first word
-                    end_time = transcript[i + len(words) - 1][2]  # End of last word
+                    # Calculate start_time and duration with padding for cleaner cuts
+                    # Padding helps account for speech recognition inaccuracies and natural speech flow
+                    original_start = transcript[i][1]  # Start of first word
+                    original_end = transcript[i + len(words) - 1][2]  # End of last word
+                    
+                    # Apply padding (ensure start doesn't go negative)
+                    start_time = max(0, original_start - padding_start)
+                    end_time = original_end + padding_end
                     duration = end_time - start_time
                     
                     clip = ClipInfo(
@@ -304,6 +444,54 @@ class WordClipDatabase:
         logger.debug(f"Phrase not found in any transcript: {phrase}")
         return None
     
+    def find_phrase_in_transcripts(
+        self, 
+        phrase: str, 
+        exclude_video_ids: Optional[List[str]] = None, 
+        channel_id: Optional[str] = None,
+        padding_start: float = 0.15,
+        padding_end: float = 0.15
+    ) -> Optional[ClipInfo]:
+        """Find a phrase (consecutive words) in the video transcripts or phrase index.
+        
+        This method first tries the fast phrase_index lookup. If the phrase is not
+        found in the index (rare phrases), it falls back to scanning transcripts directly.
+        
+        Args:
+            phrase: Space-separated words to find as a consecutive sequence.
+            exclude_video_ids: Optional list of video IDs to exclude from results.
+            channel_id: Optional channel ID to filter results to.
+            padding_start: Padding before first word start (seconds).
+            padding_end: Padding after last word end (seconds).
+            
+        Returns:
+            ClipInfo with calculated start_time and duration spanning the phrase,
+            or None if phrase is not found in any video.
+        """
+        # Try fast lookup in phrase index first (if available)
+        if self.has_phrase_index:
+            result = self._lookup_phrase_index(
+                phrase,
+                exclude_video_ids=exclude_video_ids,
+                channel_id=channel_id,
+                padding_start=padding_start,
+                padding_end=padding_end
+            )
+            if result:
+                return result
+            
+            # Not in index, fall back to transcript scan
+            logger.debug(f"Phrase '{phrase}' not in index, falling back to transcript scan")
+        
+        # Fall back to scanning transcripts (slower but more comprehensive)
+        return self._scan_transcripts_for_phrase(
+            phrase,
+            exclude_video_ids=exclude_video_ids,
+            channel_id=channel_id,
+            padding_start=padding_start,
+            padding_end=padding_end
+        )
+    
     def get_database_stats(self) -> dict:
         """Get statistics about the database.
         
@@ -332,6 +520,37 @@ class WordClipDatabase:
         
         logger.info(f"Database stats: {stats}")
         return stats
+    
+    def get_available_channels(self) -> List[dict]:
+        """Get list of available channels with video counts.
+        
+        Returns:
+            List of dictionaries with keys: channel_id, channel_title, video_count.
+        """
+        cursor = self.connection.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                v.channel_id,
+                v.channel_title,
+                COUNT(DISTINCT wc.video_id) as video_count
+            FROM videos v
+            JOIN word_clips wc ON v.video_id = wc.video_id
+            WHERE v.channel_id IS NOT NULL
+            GROUP BY v.channel_id, v.channel_title
+            ORDER BY video_count DESC, v.channel_title
+        """)
+        
+        channels = []
+        for row in cursor.fetchall():
+            channels.append({
+                'channel_id': row['channel_id'],
+                'channel_title': row['channel_title'],
+                'video_count': row['video_count']
+            })
+        
+        logger.info(f"Found {len(channels)} channels in database")
+        return channels
     
     def __enter__(self):
         """Context manager entry."""
