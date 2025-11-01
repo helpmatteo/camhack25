@@ -88,10 +88,21 @@ class VideoProcessor:
                 cmd,
                 capture_output=True,
                 check=True,
-                text=True
+                text=True,
+                timeout=30  # Add timeout to prevent hanging on corrupted files
             )
             logger.debug(f"Audio normalization completed: {output_path}")
+        except subprocess.TimeoutExpired:
+            error_msg = f"Audio normalization timed out (file may be corrupted): {input_path}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
         except subprocess.CalledProcessError as e:
+            # Check if error is due to corrupted input
+            if "Invalid NAL unit" in e.stderr or "Invalid data" in e.stderr or "Error splitting" in e.stderr:
+                error_msg = f"Audio normalization failed - input file appears corrupted: {input_path}"
+                logger.error(error_msg)
+                logger.debug(f"FFmpeg stderr: {e.stderr}")
+                raise RuntimeError(error_msg) from e
             error_msg = f"Audio normalization failed: {e.stderr}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e

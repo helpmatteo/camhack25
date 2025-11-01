@@ -98,7 +98,9 @@ class VideoSegmentDownloader:
                 logger.info(f"Using cached segment: {cached_path.name}")
                 return str(cached_path)
         
-        # Configure yt-dlp options with proper postprocessing for segments
+        # Configure yt-dlp options
+        # Note: We use download_ranges ONLY, without postprocessor_args to avoid
+        # double-processing which can corrupt the video stream
         ydl_opts = {
             'format': self.config.video_format,
             'outtmpl': output_template + '.%(ext)s',
@@ -107,10 +109,7 @@ class VideoSegmentDownloader:
             'retries': self.config.max_retries,
             'socket_timeout': self.config.timeout,
             'download_ranges': self._make_download_range(start_time, end_time),
-            'force_keyframes_at_cuts': True,
-            'postprocessor_args': {
-                'ffmpeg': ['-ss', str(start_time), '-t', str(end_time - start_time)]
-            },
+            'force_keyframes_at_cuts': True,  # Ensure clean cuts at keyframes
         }
         
         # Add cookie authentication if configured
@@ -170,6 +169,13 @@ class VideoSegmentDownloader:
                     f"Download completed but file not found. Expected pattern: {filename}.*"
                 )
             
+            # Validate that the downloaded segment is not corrupted
+            if not self._validate_segment(str(output_path)):
+                logger.warning(f"Downloaded segment appears corrupted, attempting to re-download: {output_path}")
+                # Delete corrupted file
+                output_path.unlink(missing_ok=True)
+                raise DownloadError(f"Downloaded segment is corrupted: {output_path}")
+            
             logger.info(f"Successfully downloaded: {output_path}")
             return str(output_path)
             
@@ -179,6 +185,66 @@ class VideoSegmentDownloader:
             error_msg = f"Failed to download segment for '{clip_info.word}': {str(e)}"
             logger.error(error_msg)
             raise DownloadError(error_msg) from e
+    
+    def _validate_segment(self, file_path: str) -> bool:
+        """Validate that a video segment is not corrupted.
+        
+        Args:
+            file_path: Path to the video file to validate.
+            
+        Returns:
+            True if the segment appears valid, False if corrupted.
+        """
+        import subprocess
+        
+        try:
+            # Check file size - if too small, likely corrupted
+            file_size = Path(file_path).stat().st_size
+            if file_size < 1000:  # Less than 1KB is suspicious
+                logger.warning(f"Segment file too small ({file_size} bytes): {file_path}")
+                return False
+            
+            # Use ffprobe to check if video is readable
+            cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-select_streams', 'v:0',
+                '-count_frames',
+                '-show_entries', 'stream=nb_read_frames',
+                '-of', 'default=nokey=1:noprint_wrappers=1',
+                file_path
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode != 0:
+                logger.warning(f"ffprobe validation failed for {file_path}: {result.stderr}")
+                return False
+            
+            # Check if we got at least 1 frame
+            try:
+                frame_count = int(result.stdout.strip())
+                if frame_count < 1:
+                    logger.warning(f"No frames found in segment: {file_path}")
+                    return False
+            except (ValueError, AttributeError):
+                logger.warning(f"Could not parse frame count for {file_path}")
+                return False
+            
+            logger.debug(f"Segment validated successfully: {frame_count} frames in {file_path}")
+            return True
+            
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Validation timeout for {file_path}")
+            return False
+        except Exception as e:
+            logger.warning(f"Validation error for {file_path}: {e}")
+            return False
     
     def cleanup_segment(self, file_path: str) -> None:
         """Delete a downloaded segment file.

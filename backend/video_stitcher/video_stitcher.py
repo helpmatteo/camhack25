@@ -281,8 +281,14 @@ class VideoStitcher:
                 # Step 1: Normalize audio if configured
                 if self.config.normalize_audio:
                     temp_normalized = processed_dir / f"{original_name}_normalized.mp4"
-                    self.processor.normalize_audio(current_path, str(temp_normalized))
-                    current_path = str(temp_normalized)
+                    try:
+                        self.processor.normalize_audio(current_path, str(temp_normalized))
+                        current_path = str(temp_normalized)
+                    except RuntimeError as e:
+                        if "corrupted" in str(e).lower():
+                            logger.warning(f"Skipping corrupted segment: {segment_path}")
+                            return (index, None, e)
+                        raise
                 
                 # Step 2: Re-encode for consistency
                 temp_reencoded = processed_dir / f"{original_name}_reencoded.mp4"
@@ -365,9 +371,16 @@ class VideoStitcher:
         # Filter out None values (failed processing)
         successful_paths = [p for p in processed_paths if p is not None]
         
-        logger.info(
-            f"Successfully processed {len(successful_paths)}/{len(segment_paths)} segments"
-        )
+        failed_count = len(segment_paths) - len(successful_paths)
+        if failed_count > 0:
+            logger.warning(
+                f"Successfully processed {len(successful_paths)}/{len(segment_paths)} segments "
+                f"({failed_count} failed or corrupted)"
+            )
+        else:
+            logger.info(
+                f"Successfully processed {len(successful_paths)}/{len(segment_paths)} segments"
+            )
         return successful_paths
     
     def generate_video(
