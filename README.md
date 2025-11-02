@@ -1,378 +1,305 @@
-# YouGlish‑lite MVP (M1)
+# ClipScribe 🎬
 
-**Scope:**
+Generate engaging videos from text using real YouTube clips with word-level precision.
 
-- Seed 2–3 channels.
-- Fetch transcripts → store as `(video_id, lang, t_start, t_end, text)`.
-- Index with **SQLite FTS5**.
-- REST: `GET /search?q="exact phrase"&lang=en&limit=20`.
-- Frontend: React + **YouTube IFrame Player**; hits list + **Next**.
-- **No ASR, no semantics.**
+**Key Features:**
+- 🎯 **Intelligent phrase matching** - Combines consecutive words from the same video for smoother output
+- 🎵 **Professional audio enhancement** - Optional Auphonic integration for noise reduction and normalization
+- 📝 **Interactive subtitles** - Click any word to jump to that moment in the video
+- ⚡ **Fast parallel processing** - Concurrent download and processing for speed
+- 🔍 **Full-text search** - Find and preview clips before generating
 
-Tested locally on macOS/Linux. Windows works with minor path tweaks.
-
----
-
-## 0) Repo layout
-
-```
-youglish-mvp/
-  backend/
-    app.py
-    db.py
-    ingest.py
-    youtube.py
-    schema.sql
-    requirements.txt
-    .env.example
-    data/
-      youglish.db                        # Main database
-      live_whisperx_526k_with_seeks.jsonl  # WhisperX transcription data
-    video_stitcher/                      # Video stitching module
-      cli.py
-      video_stitcher.py
-      database.py
-      downloader.py
-      concatenator.py
-      video_processor.py
-  frontend/
-    index.html
-    package.json
-    vite.config.js
-    src/
-      main.jsx
-      App.jsx
-      api.js
-      Player.jsx
-      Search.jsx
-      index.css
-  README.md
-```
+Built with FastAPI, React + Vite, FFmpeg, and SQLite FTS5.
 
 ---
 
-## 1) Data Files
-
-The `backend/data/` directory contains:
-
-### youglish.db
-
-SQLite database with FTS5 full-text search index containing:
-
-- Video metadata (video_id, title, channel info)
-- Transcript segments with timestamps (t_start, t_end, text)
-- Language information
-
-Created by running `python ingest.py` or `python init_db.py`.
-
-### live_whisperx_526k_with_seeks.jsonl
-
-WhisperX transcription data with word-level timing information (526k entries).
-
-**Format:** JSONL (JSON Lines) with each line containing:
-
-- `video_id`: YouTube video ID
-- `word`: Transcribed word
-- `start`: Start timestamp (seconds)
-- `end`: End timestamp (seconds)
-- Additional metadata from WhisperX processing
-
-This dataset enables word-level video clip extraction for the video stitcher module.
-
----
-
-## 2) Backend Setup
-
-### 2.1 Install dependencies
+## Quick Start
 
 ```bash
+# 1. Backend setup
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env  # Add your YouTube API key
+
+# 2. Initialize database
+python ingest.py           # Fetch video transcripts
+python ingest_whisperx.py  # Import word-level timing data
+
+# 3. Start servers (in separate terminals)
+python run.py              # Backend on http://localhost:8000
+cd ../frontend && npm i && npm run dev  # Frontend on http://localhost:5173
 ```
 
-### 2.2 Configure environment
-
-Copy `.env.example` to `.env` and fill in your YouTube API key and channel IDs:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
-
-```
-YOUTUBE_API_KEY=YOUR_YT_DATA_API_KEY
-SEED_CHANNEL_IDS=UCYO_jab_esuFRV4b17AJtAw,UC8butISFwT-Wl7EV0hUK0BQ
-DB_PATH=./data/youglish.db
-```
-
-### 2.3 Seed database
-
-```bash
-python ingest.py
-```
-
-This will:
-
-- Fetch videos from the specified channels
-- Download transcripts (preferring English manual captions)
-- Store segments in SQLite with FTS5 indexing
-
-Expect many videos to be skipped (no captions available). That's fine.
-
-### 2.4 Run backend server
-
-```bash
-uvicorn app:app --reload --port 8000
-```
-
-The API will be available at `http://localhost:8000`
+**Make sure you're logged into YouTube in Chrome** - the backend uses your browser cookies for authentication.
 
 ---
 
-## 3) Frontend Setup
+## Features
 
-### 3.1 Install dependencies
+### 🎯 Intelligent Video Generation
+- **Phrase matching**: Automatically finds multi-word phrases from the same video
+- **Word-level precision**: Falls back to individual words when phrases aren't available
+- **Smart clip extraction**: Adds subtle padding for natural transitions
+- **Placeholder cards**: Creates title cards for missing words
+
+### 🎵 Audio Enhancement (Optional)
+- **Auphonic integration**: Professional noise reduction and normalization
+- **Side-by-side comparison**: Keep original audio to hear the difference
+- **Automatic processing**: Extract → enhance → merge workflow
+- **Free tier available**: 2 hours/month on Auphonic
+
+### 📝 Interactive Subtitles
+- **Real-time sync**: Highlights current word as video plays
+- **Clickable words**: Jump to any word instantly
+- **Auto-scroll**: Keeps active word visible
+- **Accurate timing**: Only includes clips that made it into the final video
+
+### ⚡ Performance
+- **Parallel processing**: Concurrent downloads and video processing
+- **Batch concatenation**: Fast FFmpeg-based stitching
+- **Smart caching**: Reuses processed segments
+- **Configurable workers**: Adjust parallelism for your hardware
+
+---
+
+## Setup
+
+### Prerequisites
+- Python 3.8+
+- Node.js 16+
+- FFmpeg installed (`brew install ffmpeg` on macOS)
+- Chrome browser with YouTube login (for cookie authentication)
+
+### Backend Configuration
+
+1. **Create `.env` file**:
+```bash
+cd backend
+cp .env.example .env
+```
+
+2. **Edit `.env`** with your settings:
+```env
+# Required
+YOUTUBE_API_KEY=your_youtube_api_key_here
+SEED_CHANNEL_IDS=UCYO_jab_esuFRV4b17AJtAw,UC8butISFwT-Wl7EV0hUK0BQ
+
+# Optional - Audio Enhancement
+AUPHONIC_API_TOKEN=your_auphonic_token  # Get 2 free hours/month
+
+# Optional - Cookie Source
+COOKIES_FROM_BROWSER=chrome  # or firefox, safari, etc.
+```
+
+3. **Initialize database**:
+```bash
+python ingest.py              # Fetch transcripts from YouTube
+python ingest_whisperx.py     # Import word-level timing data (526k words)
+```
+
+### Frontend Setup
 
 ```bash
 cd frontend
-npm i
+npm install
 ```
 
-### 3.2 Run development server
-
-```bash
-npm run dev
-```
-
-Open `http://localhost:5173` in your browser.
-
-If your API runs elsewhere, set the environment variable:
-
+Set custom API URL if needed:
 ```bash
 VITE_API=http://localhost:8000 npm run dev
 ```
 
 ---
 
-## 4) Video Generation Setup
+## Usage
 
-### 4.0 YouTube Authentication (Required)
+### Generate Videos
 
-⚠️ **Important:** YouTube now requires authentication to download videos to prevent bot detection.
+1. Open the web interface at `http://localhost:5173`
+2. Enter your text (e.g., "don't worry it's working")
+3. Adjust phrase length slider (1-50 words)
+4. Optional: Enable audio enhancement
+5. Click **Generate Video**
 
-**Quick Setup:**
-1. Make sure you're logged into YouTube in Chrome (or your preferred browser)
-2. That's it! The backend will automatically use your browser's cookies
+### API Endpoints
 
-**Need to use a different browser?**
-- See `YOUTUBE_COOKIE_SETUP.md` for detailed instructions
-- Set `COOKIES_FROM_BROWSER` environment variable to your browser name
+#### `POST /generate-video`
+Generate a stitched video from text.
 
-### 4.1 Migrate Database (First Time Only)
-
-Add support for phrase matching to improve video smoothness:
-
-```bash
-cd backend
-source .venv/bin/activate
-python migrate_db.py data/youglish.db
-```
-
-This creates the `video_transcripts` table for storing complete video transcripts.
-
-### 4.2 Ingest WhisperX Word-Level Data
-
-Populate the database with word-level and full transcript data:
-
-```bash
-python ingest_whisperx.py
-```
-
-This will parse the `live_whisperx_526k_with_seeks.jsonl` file and create:
-- Word-to-clip mappings (~526k entries)
-- Complete video transcripts with timestamps (for phrase matching)
-
-### 4.3 Test Video Generation
-
-Verify everything works:
-
-```bash
-# Test phrase matching
-python test_phrase_matching.py
-
-# Generate a test video
-python -m video_stitcher.cli \
-  --text "hello world" \
-  --database data/youglish.db \
-  --output test_hello.mp4 \
-  --verbose
-```
-
-### 4.4 Generate Videos from Text
-
-Once the database is populated, users can:
-
-1. Enter a sentence in the frontend (e.g., "hello world")
-2. Click **"Generate Video"** button
-3. The system will:
-   - Find video clips using phrase matching (combines consecutive words when possible)
-   - Download the specific segments
-   - Stitch them together smoothly
-   - Serve the final video
-
-**New Feature: Phrase Matching** 🎯
-- Automatically combines consecutive words from the same video
-- Creates smoother videos with fewer cuts
-- Falls back to individual words when phrases aren't found
-- See `backend/PHRASE_MATCHING_GUIDE.md` for details
-
-### 4.5 Documentation
-
-- **Quick Start**: See `backend/QUICK_START.md` for basic usage
-- **Phrase Matching**: See `backend/PHRASE_MATCHING_GUIDE.md` for advanced features
-- **API Reference**: Check inline docstrings in `backend/video_stitcher/`
-
----
-
-## 5) Usage
-
-### Quick Start (Both Servers)
-
-```bash
-./start.sh
-```
-
-This automatically starts both backend and frontend with auto-port detection.
-
-### Manual Start
-
-1. Put your channel IDs and API key in `backend/.env`.
-2. Run `python ingest.py` to build the DB. Expect many videos to be skipped (no captions). That's fine.
-3. Run `python ingest_whisperx.py` to populate word-level clips for video generation.
-4. Make sure you're logged into YouTube in Chrome (for cookie authentication).
-5. Start API: `cd backend && python run.py` (auto-detects available port).
-6. Start frontend: `npm run dev` in `/frontend`.
-7. Query **exact phrases** (don't rely on fuzzy; use the real phrase). Click **Next** to advance through hits.
-8. Or enter text and click **"Generate Video"** to create a stitched video from individual word clips.
-
----
-
-## 5) API Endpoints
-
-### GET /health
-
-Health check endpoint.
-
-### GET /search
-
-Search for exact phrases in transcripts.
-
-**Query parameters:**
-
-- `q` (required): Search phrase (exact match)
-- `lang` (optional): Language filter (e.g., "en")
-- `limit` (optional): Maximum number of results (default: 20)
-
-**Example:**
-
-```bash
-curl 'http://localhost:8000/search?q=%22radio%20telescope%22&lang=en&limit=5' | jq
-```
-
-### POST /generate-video
-
-Generate a stitched video from individual word clips.
-
-**Request body:**
-
+**Request**:
 ```json
 {
   "text": "hello world",
-  "lang": "en"
+  "max_phrase_length": 10,
+  "enhance_audio": false,
+  "keep_original_audio": true,
+  "add_subtitles": false,
+  "aspect_ratio": "16:9"
 }
 ```
 
-**Response:**
-
+**Response**:
 ```json
 {
   "status": "success",
   "video_url": "/videos/generated_1234567890.mp4",
-  "message": "Video generated successfully with 2 words"
+  "word_timings": [
+    {"word": "hello", "start": 0.0, "end": 0.5},
+    {"word": "world", "start": 0.5, "end": 1.2}
+  ],
+  "original_video_url": "/videos/generated_1234567890_original.mp4"
 }
 ```
 
-**Example:**
+#### `GET /search`
+Search for phrases in video transcripts.
 
 ```bash
-curl -X POST http://localhost:8000/generate-video \
-  -H "Content-Type: application/json" \
-  -d '{"text": "hello world", "lang": "en"}'
+curl 'http://localhost:8000/search?q=hello%20world&lang=en&limit=20'
 ```
 
 ---
 
-## 7) Audio Enhancement with Auphonic (Optional)
+## Advanced Configuration
 
-The video stitcher now supports professional audio enhancement using the [Auphonic API](https://auphonic.com/). This feature:
+### Video Generation Options
 
-- **Removes background noise** from different video sources
-- **Normalizes volume levels** across clips
-- **Applies loudness normalization** (LUFS standard)
-- **Eliminates humming and rumbling** sounds
+```python
+{
+  "text": "your text here",
+  "max_phrase_length": 10,          # 1-50, longer = smoother videos
+  "clip_padding_start": 0.15,       # Seconds before word
+  "clip_padding_end": 0.15,         # Seconds after word
+  "add_subtitles": false,           # Burn-in subtitles
+  "aspect_ratio": "16:9",           # or "9:16", "1:1"
+  "watermark_text": null,           # Optional watermark
+  "intro_text": null,               # Optional intro card
+  "outro_text": null,               # Optional outro card
+  "enhance_audio": false,           # Auphonic enhancement
+  "keep_original_audio": true,      # Save comparison file
+  "max_download_workers": 3,        # Parallel downloads
+  "max_processing_workers": 4       # Parallel processing
+}
+```
 
-### Quick Setup
+### Audio Enhancement Setup
 
-1. **Get an Auphonic API token** (2 hours/month free):
-   - Sign up at [https://auphonic.com/](https://auphonic.com/)
-   - Go to Account Settings → API
-   - Generate a new token
+1. **Get Auphonic API token**: [Sign up](https://auphonic.com/) (2 free hours/month)
+2. **Add to `.env`**: `AUPHONIC_API_TOKEN=your_token`
+3. **Enable in UI**: Toggle "Audio Enhancement" when generating videos
 
-2. **Configure the token**:
-   ```bash
-   # Add to backend/.env
-   echo 'AUPHONIC_API_TOKEN=your_token_here' >> backend/.env
-   ```
+**What it does**:
+- Noise reduction (dynamic/speech_isolation method)
+- Hum removal (50/60 Hz mains)
+- Volume leveling
+- Loudness normalization (-16 LUFS)
+- De-reverb and de-breath processing
 
-3. **Enable in the UI**:
-   - Toggle "Audio Enhancement (Auphonic)" when generating videos
-   - Optionally keep original audio for comparison
+📖 See `AUPHONIC_SETUP.md` for detailed configuration options.
 
-### What Happens
+### Command Line Interface
 
-When enabled, the video stitcher:
-1. Generates the video normally
-2. Extracts audio to MP3
-3. Uploads to Auphonic for processing
-4. Downloads enhanced audio
-5. Merges it back into the video
+```bash
+# Generate video via CLI
+python -m video_stitcher.cli \
+  --text "hello world" \
+  --database data/youglish.db \
+  --output test.mp4 \
+  --max-phrase-length 10 \
+  --enhance-audio \
+  --verbose
 
-### Comparison Files
-
-With "Keep original audio" enabled, you get:
-- `output/generated_TIMESTAMP.mp4` - Enhanced version
-- `output/generated_TIMESTAMP_original.mp4` - Original version
-- `output/audio_comparison/` - Both MP3 files for comparison
-
-📖 **Full documentation**: See [AUPHONIC_SETUP.md](./AUPHONIC_SETUP.md) for detailed setup instructions and troubleshooting.
+# Test phrase matching
+python test_phrase_matching.py
+```
 
 ---
 
-## 8) Notes & Next Steps
+## Architecture
 
-- **Timing**: We're using caption chunk boundaries. It's good enough for MVP. Add forced alignment later for word‑level highlights.
-- **IFrame events**: For auto‑advance at segment end, wire the full YouTube JS API and listen to `onStateChange` + poll currentTime; seek to `end` + small epsilon.
-- **Index growth**: For more than a few million segments, upgrade to Elasticsearch/OpenSearch.
-- **Safety**: We never download video. Playback is via official embed only.
+```
+backend/
+  ├── app.py                    # FastAPI server
+  ├── db.py                     # Database queries
+  ├── ingest.py                 # YouTube transcript fetcher
+  ├── ingest_whisperx.py        # Word-level data importer
+  ├── video_stitcher/           # Video generation engine
+  │   ├── video_stitcher.py     # Main orchestrator
+  │   ├── database.py           # Word/phrase lookup
+  │   ├── downloader.py         # yt-dlp integration
+  │   ├── video_processor.py    # FFmpeg operations
+  │   ├── concatenator.py       # Video stitching
+  │   └── auphonic_client.py    # Audio enhancement
+  └── data/
+      ├── youglish.db           # SQLite + FTS5 index
+      └── live_whisperx_526k_with_seeks.jsonl
+
+frontend/
+  └── src/
+      └── App.jsx               # React UI with interactive subtitles
+```
+
+### How It Works
+
+1. **Phrase Matching**: Searches for longest consecutive word sequences in the same video
+2. **Fallback**: Uses individual words when phrases aren't found
+3. **Download**: Extracts specific time segments using yt-dlp
+4. **Processing**: Normalizes audio, re-encodes for consistency, adds optional effects
+5. **Enhancement**: Optional Auphonic processing for professional audio
+6. **Concatenation**: Stitches all segments using FFmpeg
+7. **Subtitles**: Generates word timings for interactive playback
 
 ---
 
-## 9) Hardening Checklist (Post‑MVP)
+## Troubleshooting
 
-- Retry/backoff and quota handling on YouTube API.
-- Language partitions per‑index for speed.
-- Channel allow/deny lists to keep result quality high.
-- Basic caching layer for `/search` hot queries.
-- Simple telemetry: log query, top1 clickthrough, dwell, next‑rate.
+### Video Generation Issues
+
+**"Failed to download segment"**
+- Ensure you're logged into YouTube in Chrome
+- Try: `COOKIES_FROM_BROWSER=firefox` in `.env` if using Firefox
+- See `YOUTUBE_COOKIE_SETUP.md` for detailed auth setup
+
+**"No clips found for word"**
+- Word may not exist in the 526k word database
+- Try different phrasing or check spelling
+- System will create placeholder title cards for missing words
+
+**"Auphonic API token not set"**
+- Add `AUPHONIC_API_TOKEN` to `.env`
+- Get token from https://auphonic.com/
+- Run `pip install python-dotenv` if missing
+
+### Performance Tuning
+
+**Slow generation?**
+- Increase `max_download_workers` (default: 3)
+- Increase `max_processing_workers` (default: 4)
+- Disable `enhance_audio` for faster results
+- Use shorter `max_phrase_length` for quicker lookups
+
+**Out of memory?**
+- Decrease worker counts
+- Process videos sequentially (set workers to 1)
+- Clear temp directory: `rm -rf backend/temp/*`
+
+---
+
+## Tech Stack
+
+**Backend:**
+- FastAPI - Modern Python web framework
+- SQLite + FTS5 - Full-text search index
+- yt-dlp - YouTube video downloader
+- FFmpeg - Video/audio processing
+- Auphonic API - Professional audio enhancement
+
+**Frontend:**
+- React 18 + Vite - Fast development and build
+- Tailwind CSS - Utility-first styling
+- YouTube IFrame API - Video playback
+
+**Data:**
+- WhisperX transcriptions - Word-level timing accuracy
+- 526k word database - Comprehensive clip coverage
