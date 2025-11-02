@@ -314,7 +314,53 @@ curl -X POST http://localhost:8000/generate-video \
 
 ---
 
-## 7) Notes & Next Steps
+## 7) Audio Enhancement with Auphonic (Optional)
+
+The video stitcher now supports professional audio enhancement using the [Auphonic API](https://auphonic.com/). This feature:
+
+- **Removes background noise** from different video sources
+- **Normalizes volume levels** across clips
+- **Applies loudness normalization** (LUFS standard)
+- **Eliminates humming and rumbling** sounds
+
+### Quick Setup
+
+1. **Get an Auphonic API token** (2 hours/month free):
+   - Sign up at [https://auphonic.com/](https://auphonic.com/)
+   - Go to Account Settings → API
+   - Generate a new token
+
+2. **Configure the token**:
+   ```bash
+   # Add to backend/.env
+   echo 'AUPHONIC_API_TOKEN=your_token_here' >> backend/.env
+   ```
+
+3. **Enable in the UI**:
+   - Toggle "Audio Enhancement (Auphonic)" when generating videos
+   - Optionally keep original audio for comparison
+
+### What Happens
+
+When enabled, the video stitcher:
+1. Generates the video normally
+2. Extracts audio to MP3
+3. Uploads to Auphonic for processing
+4. Downloads enhanced audio
+5. Merges it back into the video
+
+### Comparison Files
+
+With "Keep original audio" enabled, you get:
+- `output/generated_TIMESTAMP.mp4` - Enhanced version
+- `output/generated_TIMESTAMP_original.mp4` - Original version
+- `output/audio_comparison/` - Both MP3 files for comparison
+
+📖 **Full documentation**: See [AUPHONIC_SETUP.md](./AUPHONIC_SETUP.md) for detailed setup instructions and troubleshooting.
+
+---
+
+## 8) Notes & Next Steps
 
 - **Timing**: We're using caption chunk boundaries. It's good enough for MVP. Add forced alignment later for word‑level highlights.
 - **IFrame events**: For auto‑advance at segment end, wire the full YouTube JS API and listen to `onStateChange` + poll currentTime; seek to `end` + small epsilon.
@@ -323,7 +369,7 @@ curl -X POST http://localhost:8000/generate-video \
 
 ---
 
-## 8) Hardening Checklist (Post‑MVP)
+## 9) Hardening Checklist (Post‑MVP)
 
 - Retry/backoff and quota handling on YouTube API.
 - Language partitions per‑index for speed.

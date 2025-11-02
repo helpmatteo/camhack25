@@ -12,6 +12,7 @@ from .database import WordClipDatabase, ClipInfo
 from .downloader import VideoSegmentDownloader, VideoDownloaderConfig, DownloadError
 from .video_processor import VideoProcessor
 from .concatenator import VideoConcatenator
+from .auphonic_client import get_auphonic_client_from_env, AuphonicError
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,10 @@ class StitchingConfig:
     watermark_text: Optional[str] = None  # Watermark text to add
     intro_text: Optional[str] = None  # Intro card text
     outro_text: Optional[str] = None  # Outro card text
+    
+    # Audio enhancement options (Auphonic)
+    enhance_audio: bool = False  # Enable Auphonic audio enhancement
+    keep_original_audio: bool = True  # Keep original audio file for comparison
 
 
 class VideoStitcher:
@@ -590,6 +595,80 @@ class VideoStitcher:
             phase_times['concatenate'] = time.time() - phase_start
             logger.info(f"✓ Concatenation completed in {phase_times['concatenate']:.2f}s")
             
+            # Step 6: Audio enhancement with Auphonic (optional)
+            if self.config.enhance_audio:
+                phase_start = time.time()
+                logger.info("Step 6/6: Enhancing audio with Auphonic")
+                
+                try:
+                    # Create Auphonic client
+                    auphonic_client = get_auphonic_client_from_env()
+                    
+                    if auphonic_client is None:
+                        logger.warning("Auphonic API token not configured. Skipping audio enhancement.")
+                        logger.warning("Set AUPHONIC_API_TOKEN environment variable to enable this feature.")
+                    else:
+                        # Create audio directory
+                        audio_dir = self.temp_dir / "audio"
+                        audio_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        # Extract audio from video
+                        original_audio_path = audio_dir / f"{output_path.stem}_original.mp3"
+                        self.processor.extract_audio(str(output_path), str(original_audio_path))
+                        
+                        # Enhance audio with Auphonic
+                        enhanced_audio_path = audio_dir / f"{output_path.stem}_enhanced.mp3"
+                        auphonic_client.enhance_audio(
+                            str(original_audio_path),
+                            str(enhanced_audio_path),
+                            progress_callback=None
+                        )
+                        
+                        # Create video with enhanced audio
+                        if self.config.keep_original_audio:
+                            # Save video with original audio for comparison
+                            comparison_path = self.output_dir / f"{output_path.stem}_original.mp4"
+                            import shutil
+                            shutil.copy2(str(output_path), str(comparison_path))
+                            logger.info(f"Original audio version saved: {comparison_path}")
+                        
+                        # Replace video with enhanced audio version
+                        temp_output = self.temp_dir / f"{output_path.name}.tmp.mp4"
+                        self.processor.merge_audio_video(
+                            str(output_path),
+                            str(enhanced_audio_path),
+                            str(temp_output),
+                            keep_original_audio=False
+                        )
+                        
+                        # Replace original with enhanced version
+                        import shutil
+                        shutil.move(str(temp_output), str(output_path))
+                        
+                        logger.info(f"✓ Audio enhancement completed")
+                        
+                        # Keep audio files for comparison if configured
+                        if self.config.keep_original_audio:
+                            comparison_audio_dir = self.output_dir / "audio_comparison"
+                            comparison_audio_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            shutil.copy2(str(original_audio_path), 
+                                       str(comparison_audio_dir / f"{output_path.stem}_original.mp3"))
+                            shutil.copy2(str(enhanced_audio_path), 
+                                       str(comparison_audio_dir / f"{output_path.stem}_enhanced.mp3"))
+                            
+                            logger.info(f"Audio comparison files saved in: {comparison_audio_dir}")
+                
+                except AuphonicError as e:
+                    logger.error(f"Audio enhancement failed: {e}")
+                    logger.warning("Continuing with original audio")
+                except Exception as e:
+                    logger.error(f"Unexpected error during audio enhancement: {e}")
+                    logger.warning("Continuing with original audio")
+                
+                phase_times['audio_enhancement'] = time.time() - phase_start
+                logger.info(f"✓ Audio enhancement phase completed in {phase_times['audio_enhancement']:.2f}s")
+            
             # Calculate total time and display summary
             total_time = time.time() - start_time
             logger.info("=" * 60)
@@ -600,6 +679,8 @@ class VideoStitcher:
             logger.info(f"  Download videos:  {phase_times.get('download', 0):.2f}s ({phase_times.get('download', 0)/total_time*100:.1f}%)")
             logger.info(f"  Process videos:   {phase_times.get('process', 0):.2f}s ({phase_times.get('process', 0)/total_time*100:.1f}%)")
             logger.info(f"  Concatenate:      {phase_times.get('concatenate', 0):.2f}s ({phase_times.get('concatenate', 0)/total_time*100:.1f}%)")
+            if self.config.enhance_audio and 'audio_enhancement' in phase_times:
+                logger.info(f"  Audio enhance:    {phase_times.get('audio_enhancement', 0):.2f}s ({phase_times.get('audio_enhancement', 0)/total_time*100:.1f}%)")
             logger.info("-" * 60)
             logger.info(f"  TOTAL TIME:       {total_time:.2f}s")
             logger.info("=" * 60)

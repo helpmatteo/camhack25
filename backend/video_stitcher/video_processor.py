@@ -577,3 +577,117 @@ class VideoProcessor:
             error_msg = f"Title card creation failed: {e.stderr}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
+    
+    def extract_audio(self, video_path: str, audio_path: str) -> str:
+        """Extract audio from video file to MP3.
+        
+        Args:
+            video_path: Path to input video file.
+            audio_path: Path to output audio file (will be .mp3).
+            
+        Returns:
+            Path to extracted audio file.
+            
+        Raises:
+            RuntimeError: If extraction fails.
+        """
+        logger.info(f"Extracting audio from video: {video_path}")
+        
+        # Ensure output path has .mp3 extension
+        audio_path = str(Path(audio_path).with_suffix('.mp3'))
+        
+        cmd = [
+            'ffmpeg',
+            '-i', video_path,
+            '-vn',  # No video
+            '-acodec', 'libmp3lame',  # MP3 codec
+            '-q:a', '2',  # High quality (0-9, lower is better)
+            '-y',  # Overwrite output file
+            audio_path
+        ]
+        
+        try:
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                check=True,
+                text=True
+            )
+            logger.info(f"Audio extracted to: {audio_path}")
+            return audio_path
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Audio extraction failed: {e.stderr}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+    
+    def merge_audio_video(
+        self,
+        video_path: str,
+        audio_path: str,
+        output_path: str,
+        keep_original_audio: bool = False
+    ) -> str:
+        """Merge audio file with video file, replacing original audio.
+        
+        Args:
+            video_path: Path to input video file.
+            audio_path: Path to input audio file (mp3).
+            output_path: Path to output video file.
+            keep_original_audio: If True, mix new audio with original (not recommended).
+            
+        Returns:
+            Path to output video file.
+            
+        Raises:
+            RuntimeError: If merge fails.
+        """
+        logger.info(f"Merging enhanced audio with video")
+        logger.info(f"  Video: {video_path}")
+        logger.info(f"  Audio: {audio_path}")
+        logger.info(f"  Output: {output_path}")
+        
+        if keep_original_audio:
+            # Mix both audio tracks (original + enhanced)
+            cmd = [
+                'ffmpeg',
+                '-i', video_path,
+                '-i', audio_path,
+                '-filter_complex', '[0:a][1:a]amix=inputs=2:duration=first[aout]',
+                '-map', '0:v',  # Video from first input
+                '-map', '[aout]',  # Mixed audio
+                '-c:v', 'copy',  # Copy video without re-encoding
+                '-c:a', 'aac',  # Encode audio as AAC
+                '-b:a', '192k',  # Audio bitrate
+                '-shortest',  # Finish when shortest input ends
+                '-y',  # Overwrite output file
+                output_path
+            ]
+        else:
+            # Replace original audio entirely with enhanced audio
+            cmd = [
+                'ffmpeg',
+                '-i', video_path,
+                '-i', audio_path,
+                '-map', '0:v',  # Video from first input
+                '-map', '1:a',  # Audio from second input
+                '-c:v', 'copy',  # Copy video without re-encoding
+                '-c:a', 'aac',  # Encode audio as AAC
+                '-b:a', '192k',  # Audio bitrate
+                '-shortest',  # Finish when shortest input ends
+                '-y',  # Overwrite output file
+                output_path
+            ]
+        
+        try:
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                check=True,
+                text=True
+            )
+            logger.info(f"Audio merged successfully: {output_path}")
+            return output_path
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Audio merge failed: {e.stderr}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e

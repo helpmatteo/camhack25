@@ -28,13 +28,19 @@ function useYouTubeAPI() {
   return ready;
 }
 
-async function generateVideo(text, lang = "en", maxPhraseLength = 10) {
+async function generateVideo(text, lang = "en", maxPhraseLength = 10, enhanceAudio = false, keepOriginalAudio = true) {
   const response = await fetch(`${API}/generate-video`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ text, lang, max_phrase_length: maxPhraseLength }),
+    body: JSON.stringify({ 
+      text, 
+      lang, 
+      max_phrase_length: maxPhraseLength,
+      enhance_audio: enhanceAudio,
+      keep_original_audio: keepOriginalAudio
+    }),
   });
   if (!response.ok) {
     const error = await response.text();
@@ -202,7 +208,10 @@ export default function App() {
   const [error, setError] = useState("");
   const [generatingVideo, setGeneratingVideo] = useState(false);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState(null);
+  const [originalVideoUrl, setOriginalVideoUrl] = useState(null);
   const [maxPhraseLength, setMaxPhraseLength] = useState(10);
+  const [enhanceAudio, setEnhanceAudio] = useState(false);
+  const [keepOriginalAudio, setKeepOriginalAudio] = useState(true);
 
   function advance() {
     setActiveIndex((current) => (current + 1 < segments.length ? current + 1 : current));
@@ -211,6 +220,7 @@ export default function App() {
   async function handleGenerateVideo() {
     setError("");
     setGeneratedVideoUrl(null);
+    setOriginalVideoUrl(null);
     
     if (!text.trim()) {
       setError("Please enter some text first");
@@ -219,10 +229,13 @@ export default function App() {
     
     setGeneratingVideo(true);
     try {
-      const result = await generateVideo(text, "en", maxPhraseLength);
+      const result = await generateVideo(text, "en", maxPhraseLength, enhanceAudio, keepOriginalAudio);
       
       if (result.status === "success" && result.video_url) {
         setGeneratedVideoUrl(`${API}${result.video_url}`);
+        if (result.original_video_url) {
+          setOriginalVideoUrl(`${API}${result.original_video_url}`);
+        }
       } else if (result.status === "partial_failure") {
         setError(result.message || "Some words could not be found");
       } else {
@@ -293,9 +306,50 @@ export default function App() {
               <span>25</span>
               <span>50</span>
             </div>
-            <p className="text-xs text-purple-600/80 mt-3 flex items-center gap-1">
+                        <p className="text-xs text-purple-600/80 mt-3 flex items-center gap-1">
               <span>✨</span>
               <span>Longer phrases create smoother videos with fewer cuts</span>
+            </p>
+          </div>
+
+          {/* Audio Enhancement Options */}
+          <div className="mb-6 p-5 bg-gradient-to-br from-amber-100/30 via-orange-100/30 to-red-100/30 rounded-2xl border border-amber-300/30 shadow-sm backdrop-blur-sm">
+            <div className="flex items-center justify-between mb-3">
+              <label className="text-sm font-semibold text-amber-900 flex items-center gap-2">
+                <span>🎵</span>
+                <span>Audio Enhancement (Auphonic)</span>
+              </label>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={enhanceAudio}
+                  onChange={(e) => setEnhanceAudio(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-amber-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+            
+            {enhanceAudio && (
+              <div className="mt-3 p-3 bg-white/50 rounded-lg border border-amber-200">
+                <label className="flex items-center gap-2 text-sm text-amber-800">
+                  <input
+                    type="checkbox"
+                    checked={keepOriginalAudio}
+                    onChange={(e) => setKeepOriginalAudio(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 bg-gray-100 border-gray-300 rounded focus:ring-amber-500"
+                  />
+                  <span>Keep original audio for comparison</span>
+                </label>
+              </div>
+            )}
+            
+            <p className="text-xs text-amber-600/80 mt-3 flex items-center gap-1">
+              <span>🔊</span>
+              <span>Applies noise reduction, volume leveling, and loudness normalization</span>
+            </p>
+            <p className="text-xs text-amber-500/70 mt-1 italic">
+              Requires AUPHONIC_API_TOKEN environment variable
             </p>
           </div>
 
@@ -343,27 +397,101 @@ export default function App() {
                 <svg className="w-6 h-6 text-fuchsia-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                Your Video is Ready!
+                {originalVideoUrl ? 'Your Videos are Ready - Compare Audio!' : 'Your Video is Ready!'}
               </h3>
-              <video 
-                controls 
-                className="w-full rounded-xl shadow-xl border-2 border-white/80"
-                src={generatedVideoUrl}
-              >
-                Your browser does not support the video tag.
-              </video>
-              <div className="mt-4">
-                <a
-                  href={generatedVideoUrl}
-                  download
-                  className="inline-flex items-center gap-2 bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 text-white px-6 py-3 rounded-xl font-bold hover:from-violet-700 hover:via-purple-700 hover:to-fuchsia-700 transition-all shadow-md hover:shadow-xl transform hover:scale-105"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                  Download Video
-                </a>
-              </div>
+              
+              {originalVideoUrl ? (
+                // Side-by-side comparison view
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Original Audio Video */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-center gap-2 py-2 px-4 bg-amber-200/50 rounded-lg border border-amber-300">
+                      <svg className="w-5 h-5 text-amber-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                      </svg>
+                      <span className="font-semibold text-amber-800">Original Audio</span>
+                    </div>
+                    <video 
+                      controls 
+                      className="w-full rounded-xl shadow-xl border-2 border-amber-300/60"
+                      src={originalVideoUrl}
+                    >
+                      Your browser does not support the video tag.
+                    </video>
+                    <a
+                      href={originalVideoUrl}
+                      download
+                      className="inline-flex items-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white px-4 py-2 rounded-lg font-medium hover:from-amber-600 hover:to-orange-600 transition-all shadow-md hover:shadow-lg text-sm w-full justify-center"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Download Original
+                    </a>
+                  </div>
+
+                  {/* Enhanced Audio Video */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-center gap-2 py-2 px-4 bg-emerald-200/50 rounded-lg border border-emerald-300">
+                      <svg className="w-5 h-5 text-emerald-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                      </svg>
+                      <span className="font-semibold text-emerald-800">Enhanced Audio ✨</span>
+                    </div>
+                    <video 
+                      controls 
+                      className="w-full rounded-xl shadow-xl border-2 border-emerald-300/60"
+                      src={generatedVideoUrl}
+                    >
+                      Your browser does not support the video tag.
+                    </video>
+                    <a
+                      href={generatedVideoUrl}
+                      download
+                      className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-green-500 text-white px-4 py-2 rounded-lg font-medium hover:from-emerald-600 hover:to-green-600 transition-all shadow-md hover:shadow-lg text-sm w-full justify-center"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Download Enhanced
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                // Single video view
+                <div>
+                  <video 
+                    controls 
+                    className="w-full rounded-xl shadow-xl border-2 border-white/80"
+                    src={generatedVideoUrl}
+                  >
+                    Your browser does not support the video tag.
+                  </video>
+                  <div className="mt-4">
+                    <a
+                      href={generatedVideoUrl}
+                      download
+                      className="inline-flex items-center gap-2 bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 text-white px-6 py-3 rounded-xl font-bold hover:from-violet-700 hover:via-purple-700 hover:to-fuchsia-700 transition-all shadow-md hover:shadow-xl transform hover:scale-105"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Download Video
+                    </a>
+                  </div>
+                </div>
+              )}
+              
+              {originalVideoUrl && (
+                <div className="mt-4 p-4 bg-white/50 rounded-lg border border-purple-200">
+                  <p className="text-sm text-purple-700 flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="font-medium">Tip:</span> Play both videos to hear the difference in audio quality!
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
