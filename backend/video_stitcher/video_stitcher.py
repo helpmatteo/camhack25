@@ -98,11 +98,12 @@ class VideoStitcher:
         Returns:
             List of words in lowercase, preserving order.
         """
-        # Extract words using regex, convert to lowercase
-        words = re.findall(r'\b\w+\b', text.lower())
+        # Extract words using regex that preserves contractions, convert to lowercase
+        # This pattern matches words with optional internal apostrophes (don't, isn't, etc.)
+        words = re.findall(r"\b[\w']+\b", text.lower())
         
-        # Remove empty strings
-        words = [w for w in words if w]
+        # Remove empty strings and standalone apostrophes
+        words = [w for w in words if w and w != "'"]
         
         logger.debug(f"Parsed {len(words)} words from text: {words}")
         return words
@@ -424,26 +425,30 @@ class VideoStitcher:
                 if processed_path is not None:
                     processed_paths[index] = processed_path
         
-        # Filter out failed processing while preserving order
-        successful_paths = [p for p in processed_paths if p is not None]
+        # Filter out failed processing while preserving order and clip association
+        # Return tuples of (path, clip) for successful segments only
+        successful_results = []
+        for i, path in enumerate(processed_paths):
+            if path is not None and i < len(clips):
+                successful_results.append((path, clips[i]))
         
-        if len(successful_paths) < len(segment_paths):
-            logger.warning(f"Only {len(successful_paths)}/{len(segment_paths)} segments processed successfully")
+        if len(successful_results) < len(segment_paths):
+            logger.warning(f"Only {len(successful_results)}/{len(segment_paths)} segments processed successfully")
         
         # Log the order of processed files for debugging
-        logger.debug(f"Processed files in order: {[Path(p).name for p in successful_paths]}")
+        logger.debug(f"Processed files in order: {[Path(p).name for p, _ in successful_results]}")
         
         logger.info(
-            f"Successfully processed {len(successful_paths)}/{len(segment_paths)} segments"
+            f"Successfully processed {len(successful_results)}/{len(segment_paths)} segments"
         )
-        return successful_paths
+        return successful_results
     
     def generate_video(
         self,
         text: str,
         output_filename: str,
         progress_callback: Optional[Callable] = None
-    ) -> str:
+    ) -> Tuple[str, List[dict]]:
         """Generate video from text.
         
         Main public API that orchestrates the entire pipeline.
@@ -454,7 +459,8 @@ class VideoStitcher:
             progress_callback: Optional callback for progress updates.
             
         Returns:
-            Absolute path to the generated video file.
+            Tuple of (absolute path to the generated video file, list of word timings).
+            Word timings format: [{"word": str, "start": float, "end": float}, ...]
             
         Raises:
             ValueError: If no clips found for any words.
@@ -462,6 +468,7 @@ class VideoStitcher:
         """
         start_time = time.time()
         phase_times = {}
+        word_timings = []  # Track word timings for interactive subtitles
         
         logger.info(f"Starting video generation from text: '{text}'")
         
@@ -537,24 +544,25 @@ class VideoStitcher:
             # Step 4: Process segments
             phase_start = time.time()
             logger.info("Step 4/5: Processing video segments")
-            processed = self.process_segments(valid_segments, valid_clips, progress_callback)
+            processed_results = self.process_segments(valid_segments, valid_clips, progress_callback)
             phase_times['process'] = time.time() - phase_start
             logger.info(f"✓ Processing completed in {phase_times['process']:.2f}s")
             
-            if not processed:
+            if not processed_results:
                 raise RuntimeError("Failed to process any video segments")
             
             # Verify we have processed segments for all clips (placeholders included)
             expected_count = len([c for c in clips])
-            if len(processed) != expected_count:
+            if len(processed_results) != expected_count:
                 logger.warning(
-                    f"Processed segment count ({len(processed)}) doesn't match clip count ({expected_count}). "
-                    f"Missing {expected_count - len(processed)} segments."
+                    f"Processed segment count ({len(processed_results)}) doesn't match clip count ({expected_count}). "
+                    f"Missing {expected_count - len(processed_results)} segments."
                 )
             
             # Step 5: Add intro/outro cards and concatenate
             logger.info("Step 5/5: Adding intro/outro and concatenating videos")
             all_videos = []
+            current_timestamp = 0.0  # Track cumulative timestamp
             
             # Add intro card if configured
             if self.config.intro_text:
@@ -569,9 +577,30 @@ class VideoStitcher:
                     height=height
                 )
                 all_videos.append(str(intro_path))
+                current_timestamp += 2.0  # Intro card is 2 seconds
             
-            # Add processed segments in order (placeholders are already included)
-            all_videos.extend(processed)
+            # Add processed segments in order and track timings
+            # processed_results is a list of (video_path, clip) tuples
+            # This ensures word timings only include clips that made it into the final video
+            for video_path, clip in processed_results:
+                all_videos.append(video_path)
+                
+                # Get actual video duration from the processed file
+                try:
+                    props = self.processor.verify_video_properties(video_path)
+                    clip_duration = props.get('duration', clip.duration)
+                except Exception as e:
+                    logger.warning(f"Could not get duration for {video_path}, using clip duration: {e}")
+                    clip_duration = clip.duration
+                
+                # Record word timing only for clips that made it into final video
+                word_timings.append({
+                    "word": clip.word,
+                    "start": current_timestamp,
+                    "end": current_timestamp + clip_duration
+                })
+                
+                current_timestamp += clip_duration
             
             # Add outro card if configured
             if self.config.outro_text:
@@ -685,8 +714,9 @@ class VideoStitcher:
             logger.info(f"  TOTAL TIME:       {total_time:.2f}s")
             logger.info("=" * 60)
             logger.info(f"Video generation completed: {output_path}")
+            logger.info(f"Generated {len(word_timings)} word timings for interactive subtitles")
             
-            return str(output_path.resolve())
+            return str(output_path.resolve()), word_timings
             
         except Exception as e:
             logger.error(f"Video generation failed: {e}")

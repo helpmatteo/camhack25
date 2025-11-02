@@ -97,12 +97,19 @@ class GenerateVideoRequest(BaseModel):
     max_failure_rate: Optional[float] = 0.5  # Maximum acceptable failure rate (0.0-1.0)
 
 
+class WordTiming(BaseModel):
+    word: str
+    start: float
+    end: float
+
+
 class GenerateVideoResponse(BaseModel):
     status: str
     video_url: Optional[str] = None
     original_video_url: Optional[str] = None  # URL for original audio version (if keep_original_audio enabled)
     message: Optional[str] = None
     missing_words: Optional[List[str]] = None
+    word_timings: Optional[List[WordTiming]] = None
 
 
 @app.post("/generate-video", response_model=GenerateVideoResponse)
@@ -166,12 +173,12 @@ def generate_video(request: GenerateVideoRequest):
         # Generate the video
         with VideoStitcher(config) as stitcher:
             # The video stitcher will handle word lookup and stitching
-            output_path = stitcher.generate_video(
+            output_path, word_timings = stitcher.generate_video(
                 text=text,
                 output_filename=output_filename
             )
         
-        # Return the video URL(s)
+        # Return the video URL and word timings
         video_url = f"/videos/{output_filename}"
         original_video_url = None
         
@@ -185,6 +192,7 @@ def generate_video(request: GenerateVideoRequest):
         return GenerateVideoResponse(
             status="success",
             video_url=video_url,
+            word_timings=word_timings
             original_video_url=original_video_url,
             message=f"Video generated successfully with {len(words)} words"
         )
