@@ -2,6 +2,7 @@ import os
 import re
 import time
 from pathlib import Path
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -10,6 +11,9 @@ from pydantic import BaseModel
 from typing import Optional, List
 from db import search_phrase, get_channels
 from video_stitcher import VideoStitcher, StitchingConfig
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI(title="YouGlish-lite API", version="0.1")
 
@@ -81,6 +85,10 @@ class GenerateVideoRequest(BaseModel):
     intro_text: Optional[str] = None  # Intro card text
     outro_text: Optional[str] = None  # Outro card text
     
+    # Audio enhancement options
+    enhance_audio: Optional[bool] = False  # Enable Auphonic audio enhancement
+    keep_original_audio: Optional[bool] = True  # Keep original audio for comparison
+    
     # Parallel processing options
     max_download_workers: Optional[int] = 3  # Max concurrent downloads (1-10)
     max_processing_workers: Optional[int] = 4  # Max concurrent processing tasks (1-10)
@@ -92,6 +100,7 @@ class GenerateVideoRequest(BaseModel):
 class GenerateVideoResponse(BaseModel):
     status: str
     video_url: Optional[str] = None
+    original_video_url: Optional[str] = None  # URL for original audio version (if keep_original_audio enabled)
     message: Optional[str] = None
     missing_words: Optional[List[str]] = None
 
@@ -145,6 +154,9 @@ def generate_video(request: GenerateVideoRequest):
             watermark_text=request.watermark_text,
             intro_text=request.intro_text,
             outro_text=request.outro_text,
+            # Audio enhancement options
+            enhance_audio=request.enhance_audio or False,
+            keep_original_audio=request.keep_original_audio if request.keep_original_audio is not None else True,
         )
         
         # Generate unique filename
@@ -159,12 +171,21 @@ def generate_video(request: GenerateVideoRequest):
                 output_filename=output_filename
             )
         
-        # Return the video URL
+        # Return the video URL(s)
         video_url = f"/videos/{output_filename}"
+        original_video_url = None
+        
+        # Check if original video was saved (when audio enhancement + keep_original_audio)
+        if request.enhance_audio and request.keep_original_audio:
+            original_filename = f"generated_{timestamp}_original.mp4"
+            original_video_path = Path("./output") / original_filename
+            if original_video_path.exists():
+                original_video_url = f"/videos/{original_filename}"
         
         return GenerateVideoResponse(
             status="success",
             video_url=video_url,
+            original_video_url=original_video_url,
             message=f"Video generated successfully with {len(words)} words"
         )
     
