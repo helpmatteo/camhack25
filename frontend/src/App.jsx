@@ -195,6 +195,56 @@ function Timeline({ segments, activeIndex, setActiveIndex }) {
   );
 }
 
+function InteractiveSubtitles({ wordTimings, currentTime, onSeek }) {
+  const containerRef = useRef(null);
+  const activeWordRef = useRef(null);
+
+  // Auto-scroll to keep active word visible
+  useEffect(() => {
+    if (activeWordRef.current && containerRef.current) {
+      activeWordRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'center'
+      });
+    }
+  }, [currentTime]);
+
+  if (!wordTimings || wordTimings.length === 0) return null;
+
+  return (
+    <div className="mt-6 p-6 bg-gradient-to-br from-purple-100/30 via-violet-100/30 to-fuchsia-100/30 rounded-2xl border-2 border-purple-300/40 shadow-lg backdrop-blur-sm">
+      <h3 className="text-lg font-bold mb-3 text-purple-900 flex items-center gap-2">
+        <svg className="w-5 h-5 text-fuchsia-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+        </svg>
+        Interactive Subtitles
+      </h3>
+      <p className="text-sm text-purple-600 mb-4">Click any word to jump to that part of the video</p>
+      <div ref={containerRef} className="flex flex-wrap gap-2 max-h-64 overflow-y-auto p-2 rounded-xl bg-white/30">
+        {wordTimings.map((timing, index) => {
+          const isActive = currentTime >= timing.start && currentTime < timing.end;
+          return (
+            <button
+              key={index}
+              ref={isActive ? activeWordRef : null}
+              onClick={() => onSeek(timing.start)}
+              className={`px-3 py-1.5 rounded-lg font-medium text-sm transition-all duration-200 transform hover:scale-105 ${
+                isActive
+                  ? "bg-gradient-to-r from-fuchsia-500 via-purple-500 to-violet-500 text-white shadow-lg scale-110"
+                  : "bg-white/80 text-purple-900 hover:bg-purple-100 border-2 border-purple-200 hover:border-fuchsia-300"
+              }`}
+              title={`${timing.start.toFixed(2)}s - ${timing.end.toFixed(2)}s`}
+            >
+              {timing.word}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [text, setText] = useState("");
   const [segments, setSegments] = useState([]);
@@ -203,6 +253,9 @@ export default function App() {
   const [generatingVideo, setGeneratingVideo] = useState(false);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState(null);
   const [maxPhraseLength, setMaxPhraseLength] = useState(10);
+  const [wordTimings, setWordTimings] = useState([]);
+  const [currentVideoTime, setCurrentVideoTime] = useState(0);
+  const videoRef = useRef(null);
 
   function advance() {
     setActiveIndex((current) => (current + 1 < segments.length ? current + 1 : current));
@@ -223,6 +276,8 @@ export default function App() {
       
       if (result.status === "success" && result.video_url) {
         setGeneratedVideoUrl(`${API}${result.video_url}`);
+        setWordTimings(result.word_timings || []);
+        setCurrentVideoTime(0);
       } else if (result.status === "partial_failure") {
         setError(result.message || "Some words could not be found");
       } else {
@@ -346,12 +401,24 @@ export default function App() {
                 Your Video is Ready!
               </h3>
               <video 
+                ref={videoRef}
                 controls 
                 className="w-full rounded-xl shadow-xl border-2 border-white/80"
                 src={generatedVideoUrl}
+                onTimeUpdate={(e) => setCurrentVideoTime(e.target.currentTime)}
               >
                 Your browser does not support the video tag.
               </video>
+              
+              <InteractiveSubtitles 
+                wordTimings={wordTimings} 
+                currentTime={currentVideoTime}
+                onSeek={(time) => {
+                  if (videoRef.current) {
+                    videoRef.current.currentTime = time;
+                  }
+                }}
+              />
               <div className="mt-4">
                 <a
                   href={generatedVideoUrl}
