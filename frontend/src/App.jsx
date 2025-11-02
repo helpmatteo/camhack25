@@ -454,40 +454,9 @@ export default function App() {
                 </svg>
                 {originalVideoUrl ? 'Your Videos are Ready - Compare Audio!' : 'Your Video is Ready!'}
               </h3>
-              <video 
-                ref={videoRef}
-                controls 
-                className="w-full rounded-xl shadow-xl border-2 border-white/80"
-                src={generatedVideoUrl}
-                onTimeUpdate={(e) => setCurrentVideoTime(e.target.currentTime)}
-              >
-                Your browser does not support the video tag.
-              </video>
-              
-              <InteractiveSubtitles 
-                wordTimings={wordTimings} 
-                currentTime={currentVideoTime}
-                onSeek={(time) => {
-                  if (videoRef.current) {
-                    videoRef.current.currentTime = time;
-                  }
-                }}
-              />
-              <div className="mt-4">
-                <a
-                  href={generatedVideoUrl}
-                  download
-                  className="inline-flex items-center gap-2 bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 text-white px-6 py-3 rounded-xl font-bold hover:from-violet-700 hover:via-purple-700 hover:to-fuchsia-700 transition-all shadow-md hover:shadow-xl transform hover:scale-105"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                  Download Video
-                </a>
-              </div>
               
               {originalVideoUrl ? (
-                // Side-by-side comparison view
+                // Side-by-side comparison view (no subtitles for comparison)
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   {/* Original Audio Video */}
                   <div className="space-y-3">
@@ -544,15 +513,28 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                // Single video view
-                <div>
+                // Single video view with interactive subtitles
+                <>
                   <video 
+                    ref={videoRef}
                     controls 
                     className="w-full rounded-xl shadow-xl border-2 border-white/80"
                     src={generatedVideoUrl}
+                    onTimeUpdate={(e) => setCurrentVideoTime(e.target.currentTime)}
                   >
                     Your browser does not support the video tag.
                   </video>
+                  
+                  <InteractiveSubtitles 
+                    wordTimings={wordTimings} 
+                    currentTime={currentVideoTime}
+                    onSeek={(time) => {
+                      if (videoRef.current) {
+                        videoRef.current.currentTime = time;
+                      }
+                    }}
+                  />
+                  
                   <div className="mt-4">
                     <a
                       href={generatedVideoUrl}
@@ -565,7 +547,7 @@ export default function App() {
                       Download Video
                     </a>
                   </div>
-                </div>
+                </>
               )}
               
               {originalVideoUrl && (

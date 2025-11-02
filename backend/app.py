@@ -127,8 +127,10 @@ def generate_video(request: GenerateVideoRequest):
     if not text:
         raise HTTPException(400, detail="text is required")
     
-    # Parse text into words
-    words = re.findall(r'\b\w+\b', text.lower())
+    # Parse text into words (preserve contractions like don't, isn't)
+    words = re.findall(r"\b[\w']+\b", text.lower())
+    # Filter out standalone apostrophes
+    words = [w for w in words if w and w != "'"]
     if not words:
         raise HTTPException(400, detail="No valid words found in text")
     
@@ -192,7 +194,7 @@ def generate_video(request: GenerateVideoRequest):
         return GenerateVideoResponse(
             status="success",
             video_url=video_url,
-            word_timings=word_timings
+            word_timings=word_timings,
             original_video_url=original_video_url,
             message=f"Video generated successfully with {len(words)} words"
         )
