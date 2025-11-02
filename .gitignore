@@ -6,6 +6,7 @@ backend/output
 backend/temp
 backend/data/live_whisperx_526k_with_seeks.jsonl
 **/.venv
+**/.env
 
 # Database files
 *.db
